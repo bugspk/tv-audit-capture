@@ -31,14 +31,14 @@
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.9</h2>
+  <h2>Serial Scanner v0.91</h2>
 
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan</b> (or type Serial).</li>
+      <li>Tap <b>Scan</b> (or type Serial). Autofocus is requested for clearer scans.</li>
       <li>Tap <b>Take Photo</b>, then <b>OK</b>.</li>
-      <li>Filename + thumbnail appear below. (Some Androids show a generic name — that’s OK.)</li>
+      <li>Filename + thumbnail appear below (some Androids show generic names — that’s OK).</li>
       <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled; memory-safe).</li>
     </ol>
   </details>
@@ -98,7 +98,7 @@ function humanSize(bytes){
   return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + units[i];
 }
 
-/* ===== Scanner ===== */
+/* ===== Scanner (Option 1: autofocus via constraints) ===== */
 function startScan(){
   if(!('BarcodeDetector' in window)){
     show(false,'Barcode scanning not supported on this browser; you can still type the serial.');
@@ -111,17 +111,43 @@ function startScan(){
     return;
   }
 
-  navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
-    audio:false
-  })
-  .then(s => {
-    stream = s; videoEl.srcObject = s; return videoEl.play();
-  })
-  .then(() => { if (videoEl.readyState < 2) return new Promise(res => videoEl.onloadedmetadata = res); })
-  .then(() => {
-    const vw = videoEl.videoWidth  || 1280, vh = videoEl.videoHeight || 720;
-    canvas = document.createElement('canvas'); canvas.width = vw; canvas.height = vh;
+  // Request higher resolution + continuous autofocus (best-effort; silently ignored if unsupported)
+  const constraints = {
+    video: {
+      facingMode: { ideal: 'environment' },
+      width:  { ideal: 1920 },    // ask for 1080p-ish for sharper codes
+      height: { ideal: 1080 },
+      focusMode: 'continuous',     // non-standard but honored on many Androids
+      advanced: [
+        { focusMode: 'continuous' }, // redundancy helps on some devices
+        { torch: false }
+      ]
+    },
+    audio: false
+  };
+
+  navigator.mediaDevices.getUserMedia(constraints)
+  .then(async s => {
+    stream = s;
+    videoEl.srcObject = s;
+    await videoEl.play();
+
+    // Try a second nudge for continuous focus via applyConstraints (best-effort)
+    try {
+      const [track] = s.getVideoTracks();
+      if (track && track.applyConstraints) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      }
+    } catch(_) {}
+
+    if (videoEl.readyState < 2) {
+      await new Promise(res => videoEl.onloadedmetadata = res);
+    }
+
+    const vw = videoEl.videoWidth  || 1280;
+    const vh = videoEl.videoHeight || 720;
+    canvas = document.createElement('canvas');
+    canvas.width = vw; canvas.height = vh;
     ctx = canvas.getContext('2d', { willReadFrequently:true });
 
     videoEl.style.display = 'block';
@@ -133,7 +159,7 @@ function startScan(){
   })
   .catch(e => {
     const hint = (location.protocol==='file:'?
-      'Opened via file:// — camera is blocked. Host it over HTTPS.':
+      'This file was opened via file:// — camera is blocked. Host it over HTTPS.':
       'Camera permission denied/blocked. Check site settings and allow Camera.');
     show(false,'Camera error: '+(e && e.name ? e.name : e)+'. '+hint);
   });
@@ -145,7 +171,11 @@ function loopScan(){
   detector.detect(canvas).then(results => {
     if(results && results.length){
       const code = (results[0].rawValue || results[0].displayValue || '').trim();
-      if(code){ serialEl.value = code; stopScan(true); show(true,'Scanned: '+code); }
+      if(code){
+        serialEl.value = code;
+        stopScan(true);
+        show(true,'Scanned: '+code);
+      }
     }
     loopId = requestAnimationFrame(loopScan);
   }).catch(() => { loopId = requestAnimationFrame(loopScan); });
@@ -154,37 +184,33 @@ function loopScan(){
 function stopScan(hide){
   running = false;
   if(loopId) { cancelAnimationFrame(loopId); loopId=null; }
-  if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+  if(stream){
+    try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
     stream=null;
   }
-  if(hide){ videoEl.style.display='none'; scanMsg.textContent=''; }
+  if(hide){
+    videoEl.style.display='none';
+    scanMsg.textContent='';
+  }
   scanBtn.style.display='inline-block';
   stopBtn.style.display='none';
-  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){}
+  if(canvas){
+    try{ canvas.width = canvas.height = 0; }catch(_){}
     canvas = null; ctx = null;
   }
 }
 
-/* ===== Android quirk handling for photo picker ===== */
-function onPhotoClick(){
-  // Stop scanner to free RAM; mark that we’re expecting a capture return
-  stopScan(true);
-  waitingCapture = true;
-}
-function onPhotoChange(){
-  waitingCapture = false;
-  renderSelectedFile();
-}
+/* ===== Android photo picker quirks ===== */
+function onPhotoClick(){ stopScan(true); waitingCapture = true; }
+function onPhotoChange(){ waitingCapture = false; renderSelectedFile(); }
 function onVisibilityChange(){
-  // Some Androids don't fire change; check when we return from camera
   if (!document.hidden && waitingCapture){
     waitingCapture = false;
-    // poll for up to ~2s until the file becomes available
     let tries = 0;
     (function poll(){
       tries++;
       if (photoInp.files && photoInp.files[0]) { renderSelectedFile(); return; }
-      if (tries > 20) return; // give up after ~2s
+      if (tries > 20) return;
       setTimeout(poll, 100);
     })();
   }
@@ -192,9 +218,7 @@ function onVisibilityChange(){
 document.addEventListener('visibilitychange', onVisibilityChange);
 
 function renderSelectedFile(){
-  // Clear old preview URL
   if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
-
   const f = photoInp.files && photoInp.files[0];
   if (!f){
     fileInfoEl.style.display = 'none';
@@ -203,11 +227,9 @@ function renderSelectedFile(){
     fileSizeEl.textContent = '';
     return;
   }
-  // Some Androids return empty/placeholder names; show a friendly fallback
   const name = f.name && f.name !== 'image.jpg' ? f.name : '(new photo)';
   fileNameEl.textContent = name;
   fileSizeEl.textContent = '· ' + humanSize(f.size);
-
   currentPreviewUrl = URL.createObjectURL(f);
   previewImg.onload = () => { try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; };
   previewImg.src = currentPreviewUrl;
@@ -269,14 +291,13 @@ async function saveAsJpgSerial(){
   } catch (e) {
     show(false, 'Save failed: ' + (e && e.message ? e.message : e));
   } finally {
-    // Clear preview + name/size
     if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
     previewImg.removeAttribute('src');
     fileInfoEl.style.display = 'none';
     fileNameEl.textContent = '';
     fileSizeEl.textContent = '';
 
-    // Fully reset file input by replacing the node and re-wire listeners
+    // Replace input to free memory & rewire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;
@@ -323,7 +344,6 @@ resetBtn.addEventListener('click', resetAll);
 photoInp.addEventListener('click', onPhotoClick);
 photoInp.addEventListener('change', onPhotoChange);
 photoInp.addEventListener('input', onPhotoChange);
-document.addEventListener('visibilitychange', onVisibilityChange);
 
 // initial focus
 setTimeout(() => serialEl.focus(), 300);

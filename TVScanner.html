@@ -27,18 +27,30 @@
   .fileinfo .name { font-weight:600; }
   .preview { margin-top:6px; }
   .preview img { max-width:100%; max-height:160px; border-radius:8px; display:block; }
+
+  /* Camera controls overlay */
+  .camToolbar {
+    display:none;
+    gap:8px; align-items:center; flex-wrap:wrap;
+    margin:8px 0 0;
+  }
+  .camToolbar .group {
+    display:flex; gap:6px; align-items:center;
+    background:#f5f5f5; border-radius:8px; padding:6px 8px;
+  }
+  .camToolbar label { margin:0; font-weight:600; font-size:12px; color:#333; }
+  .camToolbar input[type="range"] { width:140px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.91</h2>
+  <h2>Serial Scanner v0.92</h2>
 
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan</b> (or type Serial). Autofocus is requested for clearer scans.</li>
-      <li>Tap <b>Take Photo</b>, then <b>OK</b>.</li>
-      <li>Filename + thumbnail appear below (some Androids show generic names — that’s OK).</li>
+      <li>Tap <b>Scan</b> (or type Serial). You can now <b>tap on the preview to focus</b> and use <b>zoom/AF/torch</b> (if supported).</li>
+      <li>Tap <b>Take Photo</b>, then <b>OK</b>. Filename/thumbnail show below.</li>
       <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled; memory-safe).</li>
     </ol>
   </details>
@@ -52,6 +64,25 @@
 
   <video id="video" playsinline muted></video>
   <div id="scanMsg" class="tips"></div>
+
+  <!-- Camera manual controls (shown only if supported) -->
+  <div id="camToolbar" class="camToolbar">
+    <div class="group" id="zoomGroup" style="display:none;">
+      <label for="zoomRange">Zoom</label>
+      <input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1">
+      <span id="zoomVal" class="tips">1x</span>
+    </div>
+    <div class="group" id="afGroup" style="display:none;">
+      <button id="afSingleBtn" type="button" class="ghost" title="Autofocus single-shot">AF (single)</button>
+    </div>
+    <div class="group" id="torchGroup" style="display:none;">
+      <button id="torchBtn" type="button" class="ghost" title="Toggle torch">Torch: Off</button>
+    </div>
+    <div class="group" id="focusDistGroup" style="display:none;">
+      <label for="focusRange">Focus</label>
+      <input id="focusRange" type="range" min="0" max="1" step="0.01" value="0.5">
+    </div>
+  </div>
 
   <label>Photo</label>
   <input id="photo" type="file" accept="image/*" capture="environment">
@@ -75,7 +106,7 @@ const scanBtn  = document.getElementById('scanBtn');
 const stopBtn  = document.getElementById('stopBtn');
 const videoEl  = document.getElementById('video');
 const scanMsg  = document.getElementById('scanMsg');
-let   photoInp = document.getElementById('photo'); // will be replaced to fully free memory
+let   photoInp = document.getElementById('photo');
 const saveBtn  = document.getElementById('saveBtn');
 const resetBtn = document.getElementById('resetBtn');
 const msgEl    = document.getElementById('msg');
@@ -85,8 +116,22 @@ const fileNameEl = fileInfoEl.querySelector('.name');
 const fileSizeEl = fileInfoEl.querySelector('.size');
 const previewImg = document.getElementById('previewImg');
 
+/* Camera controls */
+const camToolbar   = document.getElementById('camToolbar');
+const zoomGroup    = document.getElementById('zoomGroup');
+const zoomRange    = document.getElementById('zoomRange');
+const zoomVal      = document.getElementById('zoomVal');
+const afGroup      = document.getElementById('afGroup');
+const afSingleBtn  = document.getElementById('afSingleBtn');
+const torchGroup   = document.getElementById('torchGroup');
+const torchBtn     = document.getElementById('torchBtn');
+const focusDistGroup = document.getElementById('focusDistGroup');
+const focusRange   = document.getElementById('focusRange');
+
 let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
 let busy=false, currentPreviewUrl=null, waitingCapture=false;
+let track=null, caps=null, settings=null;
+let torchOn=false;
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
@@ -98,10 +143,10 @@ function humanSize(bytes){
   return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + units[i];
 }
 
-/* ===== Scanner (Option 1: autofocus via constraints) ===== */
-function startScan(){
+/* ===== Scanner with manual focus controls ===== */
+async function startScan(){
   if(!('BarcodeDetector' in window)){
-    show(false,'Barcode scanning not supported on this browser; you can still type the serial.');
+    show(false,'Barcode scanning not supported; type the serial.');
     return;
   }
   try {
@@ -111,58 +156,54 @@ function startScan(){
     return;
   }
 
-  // Request higher resolution + continuous autofocus (best-effort; silently ignored if unsupported)
   const constraints = {
     video: {
       facingMode: { ideal: 'environment' },
-      width:  { ideal: 1920 },    // ask for 1080p-ish for sharper codes
+      width:  { ideal: 1920 },
       height: { ideal: 1080 },
-      focusMode: 'continuous',     // non-standard but honored on many Androids
-      advanced: [
-        { focusMode: 'continuous' }, // redundancy helps on some devices
-        { torch: false }
-      ]
+      focusMode: 'continuous',
+      advanced: [{ focusMode: 'continuous' }]
     },
     audio: false
   };
 
-  navigator.mediaDevices.getUserMedia(constraints)
-  .then(async s => {
-    stream = s;
-    videoEl.srcObject = s;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = stream;
     await videoEl.play();
+    if (videoEl.readyState < 2) await new Promise(res => videoEl.onloadedmetadata = res);
 
-    // Try a second nudge for continuous focus via applyConstraints (best-effort)
-    try {
-      const [track] = s.getVideoTracks();
-      if (track && track.applyConstraints) {
-        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-      }
-    } catch(_) {}
+    /* Track + capabilities */
+    track = stream.getVideoTracks()[0];
+    settings = track.getSettings ? track.getSettings() : {};
+    caps = track.getCapabilities ? track.getCapabilities() : {};
 
-    if (videoEl.readyState < 2) {
-      await new Promise(res => videoEl.onloadedmetadata = res);
-    }
+    // Try to reinforce AF
+    try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch(_){}
 
+    // Build detection canvas from real video size
     const vw = videoEl.videoWidth  || 1280;
     const vh = videoEl.videoHeight || 720;
     canvas = document.createElement('canvas');
     canvas.width = vw; canvas.height = vh;
     ctx = canvas.getContext('2d', { willReadFrequently:true });
 
+    // UI
     videoEl.style.display = 'block';
     scanBtn.style.display = 'none';
     stopBtn.style.display = 'inline-block';
-    scanMsg.textContent = 'Scanning...';
+    scanMsg.textContent = 'Scanning… Tap video to focus.';
     setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
-    running = true; loopScan();
-  })
-  .catch(e => {
-    const hint = (location.protocol==='file:'?
-      'This file was opened via file:// — camera is blocked. Host it over HTTPS.':
-      'Camera permission denied/blocked. Check site settings and allow Camera.');
+    running = true;
+    loopScan();
+
+    // Setup manual controls if supported
+    setupCameraControls();
+
+  } catch(e){
+    const hint = (location.protocol==='file:'? 'Opened via file:// — camera blocked. Host over HTTPS.' : 'Permission blocked; allow Camera in site settings.');
     show(false,'Camera error: '+(e && e.name ? e.name : e)+'. '+hint);
-  });
+  }
 }
 
 function loopScan(){
@@ -186,18 +227,119 @@ function stopScan(hide){
   if(loopId) { cancelAnimationFrame(loopId); loopId=null; }
   if(stream){
     try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
-    stream=null;
+    stream=null; track=null; caps=null; settings=null;
   }
   if(hide){
     videoEl.style.display='none';
     scanMsg.textContent='';
   }
+  camToolbar.style.display = 'none';
   scanBtn.style.display='inline-block';
   stopBtn.style.display='none';
-  if(canvas){
-    try{ canvas.width = canvas.height = 0; }catch(_){}
+  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){}
     canvas = null; ctx = null;
   }
+  torchOn = false;
+}
+
+/* ===== Manual camera controls ===== */
+function setupCameraControls(){
+  if (!track || !track.getCapabilities) return;
+
+  const c = track.getCapabilities();
+  camToolbar.style.display = 'flex';
+
+  // Zoom
+  if (c.zoom) {
+    const min = c.zoom.min || 1, max = c.zoom.max || 1, step = c.zoom.step || 0.1;
+    zoomRange.min = min; zoomRange.max = max; zoomRange.step = step;
+    const s = track.getSettings ? track.getSettings() : {};
+    const cur = s.zoom || 1;
+    zoomRange.value = cur;
+    zoomVal.textContent = `${cur.toFixed(1)}x`;
+    zoomGroup.style.display = 'flex';
+
+    zoomRange.oninput = async () => {
+      const v = Number(zoomRange.value);
+      zoomVal.textContent = `${v.toFixed(1)}x`;
+      try { await track.applyConstraints({ advanced: [{ zoom: v }] }); } catch(_){}
+    };
+  } else {
+    zoomGroup.style.display = 'none';
+  }
+
+  // Torch
+  if (c.torch) {
+    torchGroup.style.display = 'flex';
+    torchBtn.onclick = async () => {
+      torchOn = !torchOn;
+      try { await track.applyConstraints({ advanced: [{ torch: torchOn }] }); } catch(_){ torchOn = !torchOn; }
+      torchBtn.textContent = `Torch: ${torchOn ? 'On' : 'Off'}`;
+    };
+  } else {
+    torchGroup.style.display = 'none';
+  }
+
+  // AF single-shot
+  const hasAFSingle = c.focusMode && Array.isArray(c.focusMode) && c.focusMode.includes('single-shot');
+  if (hasAFSingle) {
+    afGroup.style.display = 'flex';
+    afSingleBtn.onclick = async () => {
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); } catch(_){}
+    };
+  } else {
+    afGroup.style.display = 'none';
+  }
+
+  // Manual focus distance
+  if (c.focusDistance && typeof c.focusDistance.min === 'number' && typeof c.focusDistance.max === 'number') {
+    focusDistGroup.style.display = 'flex';
+    const min = c.focusDistance.min;
+    const max = c.focusDistance.max;
+    focusRange.min = 0; focusRange.max = 1; focusRange.step = 0.01;
+
+    // map slider 0..1 to focusDistance min..max
+    const applyFocus = async (norm) => {
+      const dist = min + norm * (max - min);
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: dist }] }); } catch(_){}
+    };
+    focusRange.oninput = () => applyFocus(Number(focusRange.value));
+  } else {
+    focusDistGroup.style.display = 'none';
+  }
+
+  // Tap to focus: use pointsOfInterest if supported; else map to focusDistance if present; else trigger single-shot AF
+  videoEl.onclick = async (ev) => {
+    if (!track) return;
+    const rect = videoEl.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) / rect.width;   // 0..1
+    const y = (ev.clientY - rect.top)  / rect.height;  // 0..1
+
+    let tried = false;
+
+    // pointsOfInterest (best)
+    if (c.pointsOfInterest) {
+      try {
+        await track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }] }] });
+        tried = true;
+      } catch(_) {}
+    }
+
+    // manual focus distance fallback: near if lower half, far if upper (or map by x)
+    if (!tried && c.focusDistance && typeof c.focusDistance.min === 'number' && typeof c.focusDistance.max === 'number') {
+      const norm = 1 - y; // tap lower = closer, upper = farther (tweakable)
+      const dist = c.focusDistance.min + norm * (c.focusDistance.max - c.focusDistance.min);
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: dist }] });
+        tried = true;
+      } catch(_) {}
+    }
+
+    // single-shot AF as last resort
+    if (!tried && c.focusMode && c.focusMode.includes('single-shot')) {
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); } catch(_) {}
+    }
+  };
 }
 
 /* ===== Android photo picker quirks ===== */
@@ -251,9 +393,8 @@ async function saveAsJpgSerial(){
 
   let bitmap=null, dlUrl=null;
   try {
-    // Efficient decode
     try {
-      bitmap = await createImageBitmap(f /*, { imageOrientation:'from-image' } */);
+      bitmap = await createImageBitmap(f);
     } catch {
       const objURL = URL.createObjectURL(f);
       bitmap = await new Promise((resolve,reject)=>{
@@ -297,7 +438,6 @@ async function saveAsJpgSerial(){
     fileNameEl.textContent = '';
     fileSizeEl.textContent = '';
 
-    // Replace input to free memory & rewire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;

@@ -27,16 +27,16 @@
 </head>
 <body>
 <div class="wrap">
-  <h2>TV Scranner v0.6</h2>
+  <h2>Serial Scanner v0.7</h2>
 
   <!-- Collapsed usage guide -->
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually).</li>
+      <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually). The scan button is next to the Serial field.</li>
       <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
-      <li>Tap <b>Save as JPG</b> to download it as <code>&lt;serial&gt;.jpg</code> (original image, no conversion).</li>
-      <li><b>After saving, the page auto-reloads</b> to keep memory fresh for the next TV.</li>
+      <li>Tap <b>Save as JPG</b> to download it as <code>&lt;serial&gt;.jpg</code> (auto-downscaled to avoid memory errors).</li>
+      <li>No page reload needed — memory is freed each time so you can keep going.</li>
       <li>Upload saved photos to your Google Drive <code>YYYY_MM</code> folder later.</li>
     </ol>
   </details>
@@ -70,12 +70,13 @@ const scanBtn  = document.getElementById('scanBtn');
 const stopBtn  = document.getElementById('stopBtn');
 const videoEl  = document.getElementById('video');
 const scanMsg  = document.getElementById('scanMsg');
-const photoInp = document.getElementById('photo');
+let   photoInp = document.getElementById('photo'); // will be replaced to free memory completely
 const saveBtn  = document.getElementById('saveBtn');
 const resetBtn = document.getElementById('resetBtn');
 const msgEl    = document.getElementById('msg');
 
 let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
+let isBusy=false;
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
@@ -83,37 +84,57 @@ function safeSerial(s){ return (s||'').trim().replace(/\s+/g,'').replace(/[^A-Za
 
 /* ===== Scanner ===== */
 function startScan(){
-  if(!('BarcodeDetector' in window)){ alert('Barcode scanning not supported on this browser.'); return; }
+  if(!('BarcodeDetector' in window)){
+    show(false,'Barcode scanning not supported on this browser; you can still type the serial.');
+    return;
+  }
   try {
-    detector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','itf','codabar'] });
-  } catch(e) { alert('Scanner init failed: '+e); return; }
+    detector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf','codabar'] });
+  } catch(e) {
+    show(false,'Scanner init failed: '+e);
+    return;
+  }
 
-  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false })
+  navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
+    audio:false
+  })
   .then(s => {
     stream = s;
     videoEl.srcObject = s;
     return videoEl.play();
   })
   .then(() => {
+    if (videoEl.readyState < 2) {
+      return new Promise(res => videoEl.onloadedmetadata = res);
+    }
+  })
+  .then(() => {
+    // Size canvas from real video feed for better detection
+    const vw = videoEl.videoWidth  || 1280;
+    const vh = videoEl.videoHeight || 720;
+    canvas = document.createElement('canvas');
+    canvas.width = vw; canvas.height = vh;
+    ctx = canvas.getContext('2d', { willReadFrequently:true });
+
     videoEl.style.display = 'block';
     scanBtn.style.display = 'none';
     stopBtn.style.display = 'inline-block';
     scanMsg.textContent = 'Scanning...';
-    // Make sure camera is visible without manual scroll
     setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
     running = true;
     loopScan();
   })
-  .catch(e => alert('Camera error: '+e.message));
+  .catch(e => {
+    const hint = (location.protocol==='file:'?
+      'This file was opened via file:// — camera is blocked. Host it over HTTPS.':
+      'Camera permission denied/blocked. Check site settings and allow Camera.');
+    show(false,'Camera error: '+(e && e.name ? e.name : e)+'. '+hint);
+  });
 }
 
 function loopScan(){
   if(!running) return;
-  if(!canvas){
-    canvas = document.createElement('canvas');
-    canvas.width = 640; canvas.height = 480;
-    ctx = canvas.getContext('2d', { willReadFrequently:true });
-  }
   try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch(e){}
   detector.detect(canvas).then(results => {
     if(results && results.length){
@@ -130,50 +151,107 @@ function loopScan(){
 
 function stopScan(hide){
   running = false;
-  if(loopId) cancelAnimationFrame(loopId);
-  if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){ } stream=null; }
-  if(hide){ videoEl.style.display='none'; scanMsg.textContent=''; }
-  scanBtn.style.display='inline-block'; stopBtn.style.display='none';
-  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){ } }
-  canvas = ctx = null;
+  if(loopId) { cancelAnimationFrame(loopId); loopId=null; }
+  if(stream){
+    try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+    stream=null;
+  }
+  if(hide){
+    videoEl.style.display='none';
+    scanMsg.textContent='';
+  }
+  scanBtn.style.display='inline-block';
+  stopBtn.style.display='none';
+  if(canvas){
+    try{ canvas.width = canvas.height = 0; }catch(_){}
+    canvas = null; ctx = null;
+  }
 }
 
-/* ===== Kill scanner BEFORE opening the camera picker (frees RAM) ===== */
+/* Stop scanner when user opens the camera picker (frees RAM) */
 photoInp.addEventListener('click', () => { stopScan(true); });
 
-/* ===== Save (rename original; minimal memory) ===== */
-function saveOriginalAsJpgName(){
-  const raw = serialEl.value.trim();
-  const f   = photoInp.files[0];
-  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
-  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); return; }
+/* ===== Save (downscale + memory-safe) ===== */
+async function saveAsJpgSerial(){
+  if (isBusy) return;
+  isBusy = true; saveBtn.disabled = true;
 
-  // Double-safety: ensure scanner is off before we create the blob URL
-  stopScan(true);
+  const raw = (serialEl.value||'').trim();
+  const f   = photoInp.files && photoInp.files[0];
 
-  const safe = safeSerial(raw) || 'photo';
-  const outName = safe + '.jpg'; // filename only; no conversion
+  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); isBusy=false; saveBtn.disabled=false; return; }
+  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); isBusy=false; saveBtn.disabled=false; return; }
 
+  // Free camera memory
+  stopScan(false);
+
+  let bitmap=null, dlUrl=null;
   try {
-    const a   = document.createElement('a');
-    const url = URL.createObjectURL(f);
-    a.href = url; a.download = outName;
+    // Prefer createImageBitmap (faster, less memory). Fallback to <img> if needed.
+    try {
+      bitmap = await createImageBitmap(f /*, { imageOrientation:'from-image' } */);
+    } catch {
+      const objURL = URL.createObjectURL(f);
+      bitmap = await new Promise((resolve,reject)=>{
+        const img=new Image(); img.onload=()=>resolve(img); img.onerror=reject; img.src=objURL;
+      }).finally(()=>{ try{ URL.revokeObjectURL(objURL); }catch(_){ } });
+    }
+
+    // Downscale to keep RAM small (long side <= 1600)
+    const MAX = 1600;
+    let w = bitmap.naturalWidth  || bitmap.width  || 1280;
+    let h = bitmap.naturalHeight || bitmap.height || 720;
+    if (w >= h && w > MAX) { h = Math.round(h * (MAX / w)); w = MAX; }
+    else if (h > w && h > MAX) { w = Math.round(w * (MAX / h)); h = MAX; }
+
+    const cnv = document.createElement('canvas');
+    cnv.width = w; cnv.height = h;
+    const cctx = cnv.getContext('2d', { willReadFrequently:true });
+    cctx.drawImage(bitmap, 0, 0, w, h);
+    // release bitmap ASAP
+    try { if (bitmap.close) bitmap.close(); } catch(_) {}
+    bitmap = null;
+
+    // Encode to JPEG blob (0.85 quality)
+    const jpegBlob = await new Promise((res, rej) =>
+      cnv.toBlob(b => b ? res(b) : rej(new Error('JPEG encode failed')), 'image/jpeg', 0.85)
+    );
+
+    // Free canvas memory
+    try { cnv.width = cnv.height = 0; } catch(_) {}
+
+    // Download as <serial>.jpg
+    const outName = (safeSerial(raw) || 'photo') + '.jpg';
+    dlUrl = URL.createObjectURL(jpegBlob);
+    const a = document.createElement('a');
+    a.href = dlUrl; a.download = outName;
     document.body.appendChild(a); a.click(); a.remove();
-    try { URL.revokeObjectURL(url); } catch(_){}
-    show(true, 'Saved as ' + outName + ' (original image; no conversion).');
+    try { URL.revokeObjectURL(dlUrl); } catch(_) {}
+    show(true, 'Saved as ' + outName + ' (downscaled JPEG).');
+
   } catch (e) {
     show(false, 'Save failed: ' + (e && e.message ? e.message : e));
-  }
+  } finally {
+    // Fully reset file input by replacing the node (helps free memory on mobile)
+    const newInp = photoInp.cloneNode();
+    photoInp.parentNode.replaceChild(newInp, photoInp);
+    photoInp = newInp;
 
-  // Hard reset memory after each save (prevents mobile leaks after capture)
-  setTimeout(() => location.reload(), 400);
+    // Clear fields for next unit
+    serialEl.value = '';
+    setTimeout(() => serialEl.focus(), 200);
+
+    isBusy = false; saveBtn.disabled = false;
+  }
 }
 
-/* ===== Manual Reset (if needed) ===== */
+/* ===== Manual Reset ===== */
 function resetAll(){
   stopScan(true);
   serialEl.value = '';
-  try { photoInp.value = ''; } catch(_){}
+  const newInp = photoInp.cloneNode();
+  photoInp.parentNode.replaceChild(newInp, photoInp);
+  photoInp = newInp;
   show(true,'');
   setTimeout(() => serialEl.focus(), 200);
 }
@@ -181,7 +259,7 @@ function resetAll(){
 /* ===== Wire up ===== */
 scanBtn.addEventListener('click', startScan);
 stopBtn.addEventListener('click', () => stopScan(true));
-saveBtn.addEventListener('click', saveOriginalAsJpgName);
+saveBtn.addEventListener('click', saveAsJpgSerial);
 resetBtn.addEventListener('click', resetAll);
 setTimeout(() => serialEl.focus(), 300);
 </script>

@@ -23,7 +23,7 @@
   summary { cursor:pointer; color:#333; font-weight:600; }
   summary::marker { color:#888; }
   ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
-  .fileinfo { margin-top:8px; font-size:13px; color:#333; }
+  .fileinfo { margin-top:8px; font-size:13px; color:#333; display:none; }
   .fileinfo .name { font-weight:600; }
   .preview { margin-top:6px; }
   .preview img { max-width:100%; max-height:160px; border-radius:8px; display:block; }
@@ -31,16 +31,15 @@
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.8</h2>
+  <h2>Serial Scanner v0.9</h2>
 
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually). The scan button is next to the Serial field.</li>
-      <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
-      <li>Verify the file name and thumbnail shown below the picker.</li>
-      <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled to avoid memory errors).</li>
-      <li>Upload saved photos to your Google Drive <code>YYYY_MM</code> folder later.</li>
+      <li>Tap <b>Scan</b> (or type Serial).</li>
+      <li>Tap <b>Take Photo</b>, then <b>OK</b>.</li>
+      <li>Filename + thumbnail appear below. (Some Androids show a generic name — that’s OK.)</li>
+      <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled; memory-safe).</li>
     </ol>
   </details>
 
@@ -56,7 +55,7 @@
 
   <label>Photo</label>
   <input id="photo" type="file" accept="image/*" capture="environment">
-  <div id="fileInfo" class="fileinfo" style="display:none;">
+  <div id="fileInfo" class="fileinfo">
     <span class="name"></span> <span class="size tips"></span>
     <div class="preview"><img id="previewImg" alt="Preview"></div>
   </div>
@@ -87,7 +86,7 @@ const fileSizeEl = fileInfoEl.querySelector('.size');
 const previewImg = document.getElementById('previewImg');
 
 let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
-let isBusy=false, currentPreviewUrl=null;
+let busy=false, currentPreviewUrl=null, waitingCapture=false;
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
@@ -117,20 +116,12 @@ function startScan(){
     audio:false
   })
   .then(s => {
-    stream = s;
-    videoEl.srcObject = s;
-    return videoEl.play();
+    stream = s; videoEl.srcObject = s; return videoEl.play();
   })
+  .then(() => { if (videoEl.readyState < 2) return new Promise(res => videoEl.onloadedmetadata = res); })
   .then(() => {
-    if (videoEl.readyState < 2) {
-      return new Promise(res => videoEl.onloadedmetadata = res);
-    }
-  })
-  .then(() => {
-    const vw = videoEl.videoWidth  || 1280;
-    const vh = videoEl.videoHeight || 720;
-    canvas = document.createElement('canvas');
-    canvas.width = vw; canvas.height = vh;
+    const vw = videoEl.videoWidth  || 1280, vh = videoEl.videoHeight || 720;
+    canvas = document.createElement('canvas'); canvas.width = vw; canvas.height = vh;
     ctx = canvas.getContext('2d', { willReadFrequently:true });
 
     videoEl.style.display = 'block';
@@ -138,12 +129,11 @@ function startScan(){
     stopBtn.style.display = 'inline-block';
     scanMsg.textContent = 'Scanning...';
     setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
-    running = true;
-    loopScan();
+    running = true; loopScan();
   })
   .catch(e => {
     const hint = (location.protocol==='file:'?
-      'This file was opened via file:// — camera is blocked. Host it over HTTPS.':
+      'Opened via file:// — camera is blocked. Host it over HTTPS.':
       'Camera permission denied/blocked. Check site settings and allow Camera.');
     show(false,'Camera error: '+(e && e.name ? e.name : e)+'. '+hint);
   });
@@ -155,11 +145,7 @@ function loopScan(){
   detector.detect(canvas).then(results => {
     if(results && results.length){
       const code = (results[0].rawValue || results[0].displayValue || '').trim();
-      if(code){
-        serialEl.value = code;
-        stopScan(true);
-        show(true,'Scanned: '+code);
-      }
+      if(code){ serialEl.value = code; stopScan(true); show(true,'Scanned: '+code); }
     }
     loopId = requestAnimationFrame(loopScan);
   }).catch(() => { loopId = requestAnimationFrame(loopScan); });
@@ -168,31 +154,47 @@ function loopScan(){
 function stopScan(hide){
   running = false;
   if(loopId) { cancelAnimationFrame(loopId); loopId=null; }
-  if(stream){
-    try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+  if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
     stream=null;
   }
-  if(hide){
-    videoEl.style.display='none';
-    scanMsg.textContent='';
-  }
+  if(hide){ videoEl.style.display='none'; scanMsg.textContent=''; }
   scanBtn.style.display='inline-block';
   stopBtn.style.display='none';
-  if(canvas){
-    try{ canvas.width = canvas.height = 0; }catch(_){}
+  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){}
     canvas = null; ctx = null;
   }
 }
 
-/* Stop scanner when user opens the camera picker (frees RAM) */
-function onPhotoClick(){ stopScan(true); }
-
-/* Show chosen file name/size + tiny preview */
+/* ===== Android quirk handling for photo picker ===== */
+function onPhotoClick(){
+  // Stop scanner to free RAM; mark that we’re expecting a capture return
+  stopScan(true);
+  waitingCapture = true;
+}
 function onPhotoChange(){
-  if (currentPreviewUrl){
-    try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){}
-    currentPreviewUrl = null;
+  waitingCapture = false;
+  renderSelectedFile();
+}
+function onVisibilityChange(){
+  // Some Androids don't fire change; check when we return from camera
+  if (!document.hidden && waitingCapture){
+    waitingCapture = false;
+    // poll for up to ~2s until the file becomes available
+    let tries = 0;
+    (function poll(){
+      tries++;
+      if (photoInp.files && photoInp.files[0]) { renderSelectedFile(); return; }
+      if (tries > 20) return; // give up after ~2s
+      setTimeout(poll, 100);
+    })();
   }
+}
+document.addEventListener('visibilitychange', onVisibilityChange);
+
+function renderSelectedFile(){
+  // Clear old preview URL
+  if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
+
   const f = photoInp.files && photoInp.files[0];
   if (!f){
     fileInfoEl.style.display = 'none';
@@ -201,9 +203,11 @@ function onPhotoChange(){
     fileSizeEl.textContent = '';
     return;
   }
-  // Some mobile browsers show generic names; we display whatever we get.
-  fileNameEl.textContent = f.name || '(selected image)';
+  // Some Androids return empty/placeholder names; show a friendly fallback
+  const name = f.name && f.name !== 'image.jpg' ? f.name : '(new photo)';
+  fileNameEl.textContent = name;
   fileSizeEl.textContent = '· ' + humanSize(f.size);
+
   currentPreviewUrl = URL.createObjectURL(f);
   previewImg.onload = () => { try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; };
   previewImg.src = currentPreviewUrl;
@@ -211,7 +215,6 @@ function onPhotoChange(){
 }
 
 /* ===== Save (downscale + memory-safe) ===== */
-let busy=false;
 async function saveAsJpgSerial(){
   if (busy) return;
   busy = true; saveBtn.disabled = true;
@@ -222,8 +225,7 @@ async function saveAsJpgSerial(){
   if(!raw){ alert('Enter the serial first.'); serialEl.focus(); busy=false; saveBtn.disabled=false; return; }
   if(!f){ alert('Take/choose a photo.'); photoInp.focus(); busy=false; saveBtn.disabled=false; return; }
 
-  // Free camera memory
-  stopScan(false);
+  stopScan(false); // free camera memory
 
   let bitmap=null, dlUrl=null;
   try {
@@ -251,13 +253,11 @@ async function saveAsJpgSerial(){
     try { if (bitmap.close) bitmap.close(); } catch(_) {}
     bitmap = null;
 
-    // Encode to JPEG blob
     const jpegBlob = await new Promise((res, rej) =>
       cnv.toBlob(b => b ? res(b) : rej(new Error('JPEG encode failed')), 'image/jpeg', 0.85)
     );
     try { cnv.width = cnv.height = 0; } catch(_){}
 
-    // Download as <serial>.jpg
     const outName = (safeSerial(raw) || 'photo') + '.jpg';
     dlUrl = URL.createObjectURL(jpegBlob);
     const a = document.createElement('a');
@@ -276,18 +276,18 @@ async function saveAsJpgSerial(){
     fileNameEl.textContent = '';
     fileSizeEl.textContent = '';
 
-    // Fully reset file input by replacing node (free memory) and rewire listeners
+    // Fully reset file input by replacing the node and re-wire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;
     photoInp.addEventListener('click', onPhotoClick);
     photoInp.addEventListener('change', onPhotoChange);
+    photoInp.addEventListener('input', onPhotoChange);
 
-    // Reset serial
     serialEl.value = '';
     setTimeout(() => serialEl.focus(), 200);
 
-    busy = false; saveBtn.disabled = false;
+    busy=false; saveBtn.disabled=false;
   }
 }
 
@@ -307,6 +307,7 @@ function resetAll(){
   photoInp = newInp;
   photoInp.addEventListener('click', onPhotoClick);
   photoInp.addEventListener('change', onPhotoChange);
+  photoInp.addEventListener('input', onPhotoChange);
 
   show(true,'');
   setTimeout(() => serialEl.focus(), 200);
@@ -318,9 +319,11 @@ stopBtn.addEventListener('click', () => stopScan(true));
 saveBtn.addEventListener('click', saveAsJpgSerial);
 resetBtn.addEventListener('click', resetAll);
 
-// file input handlers
+// file input handlers (Android quirks)
 photoInp.addEventListener('click', onPhotoClick);
 photoInp.addEventListener('change', onPhotoChange);
+photoInp.addEventListener('input', onPhotoChange);
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 // initial focus
 setTimeout(() => serialEl.focus(), 300);

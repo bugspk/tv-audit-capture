@@ -2,228 +2,174 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>TV Audit — Save as &lt;serial&gt;.jpg</title>
+<title>TV Audit – Scan & Save as &lt;serial&gt;.jpg</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --pad: 14px; --muted:#555; --ok:#0a0; --err:#d00; --btn:#2d6cdf; }
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; }
-  .wrap { max-width: 520px; margin: 0 auto; padding: var(--pad); }
-  h2 { margin: 0 0 8px 0; }
-  p { margin: 8px 0; color: var(--muted); }
-  label { font-weight: 600; display:block; margin: 12px 0 6px; }
-  input[type="text"] { width: 100%; padding: 10px; font-size: 18px; border: 1px solid #ccc; border-radius:8px; }
-  button { padding: 10px 14px; font-size: 16px; border:0; border-radius:10px; background:var(--btn); color:#fff; }
+  :root { --pad:14px; --muted:#555; --btn:#2d6cdf; --ok:#0a0; --err:#d00; }
+  body { font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; }
+  .wrap { max-width:520px; margin:auto; padding:var(--pad); }
+  h2 { margin:0 0 10px 0; }
+  ol { color:#555; line-height:1.5; }
+  label { font-weight:600; display:block; margin:12px 0 6px; }
+  input[type="text"] { width:100%; padding:10px; font-size:18px; border:1px solid #ccc; border-radius:8px; }
+  button { padding:10px 14px; font-size:16px; border:0; border-radius:10px; background:var(--btn); color:#fff; }
   button.secondary { background:#777; }
   button.ghost { background:#eee; color:#222; }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .bar { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
-  #msg { margin-top: 12px; font-size: 14px; }
-  .tips { margin-top: 12px; color: var(--muted); font-size: 12px; }
-  #fileInfo { display:block; margin-top:6px; color:#333; font-size:14px; }
-  #thumb { display:none; margin-top:8px; border-radius:8px; max-width:160px; max-height:120px; }
+  video { width:100%; border-radius:8px; background:#000; display:none; }
+  #msg { margin-top:10px; font-size:14px; }
+  .tips { margin-top:12px; color:var(--muted); font-size:12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>TV Audit v0.3</h2>
+  <h2>TV Audit v0.4</h2>
 
-  <p><b>How to use this page:</b></p>
-  <ol style="color:#555;line-height:1.5;">
-    <li>Enter or paste the TV <b>Serial</b> number.</li>
-    <li>Tap <b>Take/Choose Photo</b> and select the TV picture from your camera or gallery.</li>
-    <li>Tap <b>Save as JPG (small)</b> <i>or</i> <b>Save original file</b> to download it as <code>&lt;serial&gt;.jpg</code>.</li>
-    <li><b>After saving, tap Reset</b> to clear and start the next TV.</li>
-    <li>When finished, upload all saved files to your Google Drive <code>YYYY_MM</code> audit folder.</li>
+  <p><b>How to use:</b></p>
+  <ol>
+    <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually).</li>
+    <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
+    <li>Tap <b>Save as JPG</b> or <b>Save original file</b> to download it as <code>&lt;serial&gt;.jpg</code>.</li>
+    <li><b>Tap Reset</b> before moving to the next TV.</li>
+    <li>Upload saved photos to Google Drive <code>YYYY_MM</code> folder later.</li>
   </ol>
 
   <label>Serial</label>
-  <input id="serial" type="text" placeholder="Enter serial (paste from barcode app if needed)…">
+  <div class="row">
+    <input id="serial" type="text" placeholder="Scan or type serial...">
+    <button id="scanBtn" type="button" class="ghost">Scan</button>
+    <button id="stopBtn" type="button" class="secondary" style="display:none;">Stop</button>
+  </div>
+  <video id="video" playsinline muted></video>
+  <div id="scanMsg" class="tips"></div>
 
   <label>Photo</label>
-  <!-- Hidden real input (no capture attr to avoid in-page camera memory spikes) -->
-  <input id="photo" type="file" accept="image/*" style="display:none">
-  <div class="row">
-    <button id="pickBtn" class="ghost" type="button">Take/Choose Photo</button>
-    <button id="clearBtn" class="secondary" type="button">Clear</button>
-  </div>
-  <span id="fileInfo">No file chosen</span>
-  <img id="thumb" alt="preview">
-
-  <div class="bar" style="margin-top:12px;">
-    <button id="saveJpgBtn" type="button" title="Convert and save smaller JPEG named <serial>.jpg">Save as JPG (small)</button>
-    <button id="saveOrigBtn" class="ghost" type="button" title="Save original file as <serial>.<ext> (no conversion)">Save original file</button>
-    <button id="resetBtn" class="secondary" type="button" title="Clear everything">Reset</button>
+  <input id="photo" type="file" accept="image/*" capture="environment">
+  <div class="row" style="margin-top:10px;">
+    <button id="saveJpgBtn">Save as JPG (small)</button>
+    <button id="saveOrigBtn" class="ghost">Save original file</button>
+    <button id="resetBtn" class="secondary">Reset</button>
   </div>
 
   <div id="msg"></div>
-
-  <details class="tips">
-    <summary>Tips</summary>
-    <ul>
-      <li>If you ever see a memory warning, use <b>Save original file</b> — it uses almost no RAM.</li>
-      <li>The JPG path keeps the long side ≤ 800 px for reliability on older phones.</li>
-      <li>Reload the page occasionally after many photos to reclaim memory.</li>
-    </ul>
-  </details>
 </div>
 
 <script>
 /* ===== Elements ===== */
-const serialEl    = document.getElementById('serial');
-const photoInp    = document.getElementById('photo');
-const pickBtn     = document.getElementById('pickBtn');
-const clearBtn    = document.getElementById('clearBtn');
-const fileInfoEl  = document.getElementById('fileInfo');
-const thumbEl     = document.getElementById('thumb');
-const saveJpgBtn  = document.getElementById('saveJpgBtn');
-const saveOrigBtn = document.getElementById('saveOrigBtn');
-const resetBtn    = document.getElementById('resetBtn');
-const msgEl       = document.getElementById('msg');
+const serialEl = document.getElementById('serial');
+const scanBtn  = document.getElementById('scanBtn');
+const stopBtn  = document.getElementById('stopBtn');
+const videoEl  = document.getElementById('video');
+const scanMsg  = document.getElementById('scanMsg');
+const photoInp = document.getElementById('photo');
+const saveJpgBtn = document.getElementById('saveJpgBtn');
+const saveOrigBtn= document.getElementById('saveOrigBtn');
+const resetBtn = document.getElementById('resetBtn');
+const msgEl    = document.getElementById('msg');
+
+let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
 
 /* ===== Helpers ===== */
-function show(ok, t){ msgEl.style.color = ok ? '#0a0' : '#d00'; msgEl.textContent = t || ''; }
-function safeSerial(s){ return (s||'').replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,''); }
-function humanSize(n){ if (n==null) return ''; const mb=n/1048576; return mb>=1? mb.toFixed(1)+' MB' : (n/1024).toFixed(0)+' KB'; }
-function updateFileInfo(){
-  const f = photoInp.files && photoInp.files[0];
-  if (!f){
-    fileInfoEl.textContent = 'No file chosen';
-    thumbEl.style.display = 'none'; thumbEl.removeAttribute('src');
-    return;
-  }
-  fileInfoEl.textContent = `${f.name || '(photo)'} • ${humanSize(f.size)}`;
-  try {
-    const url = URL.createObjectURL(f);
-    thumbEl.src = url;
-    thumbEl.style.display = 'inline-block';
-    thumbEl.onload = () => { try { URL.revokeObjectURL(url); } catch(_){} };
-  } catch(_){ thumbEl.style.display = 'none'; }
+function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
+function safeSerial(s){ return (s||'').trim().replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,''); }
+
+/* ===== Scanner ===== */
+function startScan(){
+  if(!('BarcodeDetector'in window)){alert('BarcodeDetector not supported');return;}
+  try{detector=new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','itf','codabar']});}
+  catch(e){alert('Scanner init failed: '+e);return;}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false})
+  .then(s=>{stream=s;videoEl.srcObject=s;return videoEl.play();})
+  .then(()=>{videoEl.style.display='block';scanBtn.style.display='none';stopBtn.style.display='inline-block';scanMsg.textContent='Scanning...';running=true;loopScan();})
+  .catch(e=>alert('Camera error: '+e.message));
 }
 
-/* Make file picker reliable: clear value first so selecting same photo still triggers 'change' */
-pickBtn.addEventListener('click', () => { try { photoInp.value=''; } catch(_){} setTimeout(() => photoInp.click(), 0); });
-clearBtn.addEventListener('click', () => { try { photoInp.value=''; } catch(_){} updateFileInfo(); });
-photoInp.addEventListener('change', updateFileInfo);
-
-/* ===== Save: Original (no conversion) ===== */
-function saveOriginal(){
-  const raw = (serialEl.value||'').trim();
-  const f   = photoInp.files && photoInp.files[0];
-  if (!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
-  if (!f){ alert('Take/choose a photo.'); pickBtn.focus(); return; }
-
-  const safe = safeSerial(raw) || 'photo';
-  let ext = 'bin';
-  const m = (f.name||'').match(/\.([A-Za-z0-9]+)$/);
-  if (m) ext = m[1];
-  else if (f.type) { const guess = f.type.split('/')[1] || 'bin'; ext = guess.replace(/[^A-Za-z0-9]/g,'') || 'bin'; }
-  const outName = `${safe}.${ext.toLowerCase()}`;
-
-  const a = document.createElement('a');
-  const url = URL.createObjectURL(f);
-  a.href = url; a.download = outName;
-  document.body.appendChild(a); a.click(); a.remove();
-  try { URL.revokeObjectURL(url); } catch(_){}
-
-  show(true, `Saved original as ${outName}. Upload to your Drive audit folder.`);
-  try { photoInp.value=''; } catch(_){} updateFileInfo();
-  serialEl.value=''; serialEl.focus();
-}
-
-/* ===== Save: JPEG (tiled, low-memory) ===== */
-function microYield(){ return new Promise(r => setTimeout(r, 0)); }
-function drawTiled(ctx, source, sw, sh, dw, dh, tiles=10){
-  const tileHsrc = Math.ceil(sh / tiles);
-  for (let i=0; i<tiles; i++){
-    const sy = i * tileHsrc;
-    const shSlice = Math.min(tileHsrc, sh - sy);
-    if (shSlice <= 0) break;
-    const dy = Math.floor(i * (dh * tileHsrc / sh));
-    const dhSlice = Math.floor((shSlice / sh) * dh);
-    ctx.drawImage(source, 0, sy, sw, shSlice, 0, dy, dw, dhSlice);
-  }
-}
-
-async function saveAsJpg(){
-  const raw = (serialEl.value||'').trim();
-  const f   = photoInp.files && photoInp.files[0];
-  if (!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
-  if (!f){ alert('Take/choose a photo.'); pickBtn.focus(); return; }
-
-  const safe = safeSerial(raw) || 'photo';
-  const outName = safe + '.jpg';
-
-  try {
-    // Decode efficiently
-    let bmp = null;
-    try { bmp = await createImageBitmap(f); }
-    catch {
-      const tmpUrl = URL.createObjectURL(f);
-      bmp = await new Promise((res, rej) => {
-        const img = new Image();
-        img.onload = () => res(img);
-        img.onerror = rej;
-        img.src = tmpUrl;
-      }).finally(() => { try { URL.revokeObjectURL(tmpUrl); } catch(_){} });
+function loopScan(){
+  if(!running)return;
+  if(!canvas){canvas=document.createElement('canvas');canvas.width=640;canvas.height=480;ctx=canvas.getContext('2d',{willReadFrequently:true});}
+  try{ctx.drawImage(videoEl,0,0,canvas.width,canvas.height);}catch(e){}
+  detector.detect(canvas).then(results=>{
+    if(results&&results.length){
+      const code=results[0].rawValue||results[0].displayValue;
+      if(code){serialEl.value=code.trim();stopScan(true);show(true,'Scanned: '+code);}
     }
+    loopId=requestAnimationFrame(loopScan);
+  }).catch(()=>{loopId=requestAnimationFrame(loopScan);});
+}
 
-    await microYield();
+function stopScan(hide){
+  running=false;
+  if(loopId)cancelAnimationFrame(loopId);
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  if(hide){videoEl.style.display='none';scanMsg.textContent='';}
+  scanBtn.style.display='inline-block';stopBtn.style.display='none';
+}
 
-    // Aggressive downscale (long side ≤ 800 px)
-    const MAX = 800;
-    let sw = bmp.naturalWidth  || bmp.width  || 1280;
-    let sh = bmp.naturalHeight || bmp.height || 720;
-    if (sw >= sh && sw > MAX) { sh = Math.round(sh * (MAX / sw)); sw = MAX; }
-    else if (sh > sw && sh > MAX) { sw = Math.round(sw * (MAX / sh)); sh = MAX; }
+/* ===== Save: Original ===== */
+function saveOriginal(){
+  const raw=serialEl.value.trim();
+  const f=photoInp.files[0];
+  if(!raw){alert('Enter serial first.');return;}
+  if(!f){alert('Take/choose a photo.');return;}
+  const safe=safeSerial(raw);
+  const ext=(f.name.split('.').pop()||'jpg').toLowerCase();
+  const outName=safe+'.'+ext;
+  const a=document.createElement('a');
+  const url=URL.createObjectURL(f);
+  a.href=url;a.download=outName;document.body.appendChild(a);a.click();a.remove();
+  try{URL.revokeObjectURL(url);}catch(_){}
+  show(true,'Saved original as '+outName);
+  resetAll();
+}
 
-    const useOff = (typeof OffscreenCanvas !== 'undefined');
-    const cnv = useOff ? new OffscreenCanvas(sw, sh) : document.createElement('canvas');
-    if (!useOff) { cnv.width = sw; cnv.height = sh; }
-    const ctx = cnv.getContext('2d', { willReadFrequently: true });
+/* ===== Save: JPG (compressed) ===== */
+async function saveAsJpg(){
+  const raw=serialEl.value.trim();
+  const f=photoInp.files[0];
+  if(!raw){alert('Enter serial first.');return;}
+  if(!f){alert('Take/choose a photo.');return;}
+  const safe=safeSerial(raw);
+  const outName=safe+'.jpg';
 
-    drawTiled(ctx, bmp, bmp.width || sw, bmp.height || sh, sw, sh, 10);
-
-    await microYield();
-
-    const jpegBlob = await new Promise((resolve, reject) => {
-      if (useOff && cnv.convertToBlob) {
-        cnv.convertToBlob({ type:'image/jpeg', quality:0.85 }).then(resolve, reject);
-      } else {
-        (cnv.toBlob ? cnv.toBlob.bind(cnv) : (cb)=>cb(null))((b)=> b? resolve(b) : reject(new Error('JPEG encode failed')), 'image/jpeg', 0.85);
-      }
-    });
-
-    const url = URL.createObjectURL(jpegBlob);
-    const a = document.createElement('a');
-    a.href = url; a.download = outName;
-    document.body.appendChild(a); a.click(); a.remove();
-    try { URL.revokeObjectURL(url); } catch(_){}
-
-    if (!useOff) { try { cnv.width = cnv.height = 0; } catch(_){} }
-    if (bmp && bmp.close) try { bmp.close(); } catch(_){}
-
-    show(true, 'Saved JPEG as ' + outName + ' (check Downloads).');
-    try { photoInp.value=''; } catch(_){} updateFileInfo();
-    serialEl.value=''; serialEl.focus();
-  } catch (err){
-    // Fallback: rename original without conversion (near-zero memory)
-    show(false, 'JPEG convert failed (memory). Saving original instead.');
+  try{
+    let img=await createImageBitmap(f);
+    const MAX=800;
+    let w=img.width,h=img.height;
+    if(w>=h&&w>MAX){h=Math.round(h*(MAX/w));w=MAX;}
+    else if(h>w&&h>MAX){w=Math.round(w*(MAX/h));h=MAX;}
+    const cnv=document.createElement('canvas');
+    cnv.width=w;cnv.height=h;
+    const cctx=cnv.getContext('2d',{willReadFrequently:true});
+    cctx.drawImage(img,0,0,w,h);
+    const blob=await new Promise(r=>cnv.toBlob(r,'image/jpeg',0.85));
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download=outName;document.body.appendChild(a);a.click();a.remove();
+    try{URL.revokeObjectURL(url);}catch(_){}
+    if(img.close)img.close();
+    show(true,'Saved JPEG as '+outName);
+    resetAll();
+  }catch(e){
+    show(false,'Memory issue. Saving original instead.');
     saveOriginal();
   }
 }
 
 /* ===== Reset ===== */
 function resetAll(){
-  try { photoInp.value=''; } catch(_){} updateFileInfo();
-  serialEl.value=''; show(true,'');
-  setTimeout(()=>serialEl.focus(), 200);
+  stopScan(true);
+  serialEl.value='';photoInp.value='';
+  scanMsg.textContent='';show(true,'');
+  setTimeout(()=>serialEl.focus(),200);
 }
 
-/* Wire up */
-saveOrigBtn.addEventListener('click', saveOriginal);
-saveJpgBtn.addEventListener('click', saveAsJpg);
-resetBtn.addEventListener('click', resetAll);
-document.addEventListener('DOMContentLoaded', () => setTimeout(()=>serialEl.focus(), 300));
+/* ===== Wire up ===== */
+scanBtn.addEventListener('click',startScan);
+stopBtn.addEventListener('click',()=>stopScan(true));
+saveOrigBtn.addEventListener('click',saveOriginal);
+saveJpgBtn.addEventListener('click',saveAsJpg);
+resetBtn.addEventListener('click',resetAll);
+setTimeout(()=>serialEl.focus(),400);
 </script>
 </body>
 </html>

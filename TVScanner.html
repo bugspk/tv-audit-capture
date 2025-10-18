@@ -23,20 +23,23 @@
   summary { cursor:pointer; color:#333; font-weight:600; }
   summary::marker { color:#888; }
   ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
+  .fileinfo { margin-top:8px; font-size:13px; color:#333; }
+  .fileinfo .name { font-weight:600; }
+  .preview { margin-top:6px; }
+  .preview img { max-width:100%; max-height:160px; border-radius:8px; display:block; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.7</h2>
+  <h2>Serial Scanner v0.8</h2>
 
-  <!-- Collapsed usage guide -->
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
       <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually). The scan button is next to the Serial field.</li>
       <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
-      <li>Tap <b>Save as JPG</b> to download it as <code>&lt;serial&gt;.jpg</code> (auto-downscaled to avoid memory errors).</li>
-      <li>No page reload needed — memory is freed each time so you can keep going.</li>
+      <li>Verify the file name and thumbnail shown below the picker.</li>
+      <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled to avoid memory errors).</li>
       <li>Upload saved photos to your Google Drive <code>YYYY_MM</code> folder later.</li>
     </ol>
   </details>
@@ -52,8 +55,11 @@
   <div id="scanMsg" class="tips"></div>
 
   <label>Photo</label>
-  <!-- Keep capture to open the system camera directly -->
   <input id="photo" type="file" accept="image/*" capture="environment">
+  <div id="fileInfo" class="fileinfo" style="display:none;">
+    <span class="name"></span> <span class="size tips"></span>
+    <div class="preview"><img id="previewImg" alt="Preview"></div>
+  </div>
 
   <div class="actions">
     <button id="saveBtn">Save as JPG</button>
@@ -70,17 +76,28 @@ const scanBtn  = document.getElementById('scanBtn');
 const stopBtn  = document.getElementById('stopBtn');
 const videoEl  = document.getElementById('video');
 const scanMsg  = document.getElementById('scanMsg');
-let   photoInp = document.getElementById('photo'); // will be replaced to free memory completely
+let   photoInp = document.getElementById('photo'); // will be replaced to fully free memory
 const saveBtn  = document.getElementById('saveBtn');
 const resetBtn = document.getElementById('resetBtn');
 const msgEl    = document.getElementById('msg');
 
+const fileInfoEl = document.getElementById('fileInfo');
+const fileNameEl = fileInfoEl.querySelector('.name');
+const fileSizeEl = fileInfoEl.querySelector('.size');
+const previewImg = document.getElementById('previewImg');
+
 let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
-let isBusy=false;
+let isBusy=false, currentPreviewUrl=null;
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
 function safeSerial(s){ return (s||'').trim().replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,''); }
+function humanSize(bytes){
+  if (!bytes && bytes !== 0) return '';
+  const units = ['B','KB','MB','GB']; let i=0; let n=bytes;
+  while (n>=1024 && i<units.length-1){ n/=1024; i++; }
+  return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + units[i];
+}
 
 /* ===== Scanner ===== */
 function startScan(){
@@ -110,7 +127,6 @@ function startScan(){
     }
   })
   .then(() => {
-    // Size canvas from real video feed for better detection
     const vw = videoEl.videoWidth  || 1280;
     const vh = videoEl.videoHeight || 720;
     canvas = document.createElement('canvas');
@@ -169,25 +185,49 @@ function stopScan(hide){
 }
 
 /* Stop scanner when user opens the camera picker (frees RAM) */
-photoInp.addEventListener('click', () => { stopScan(true); });
+function onPhotoClick(){ stopScan(true); }
+
+/* Show chosen file name/size + tiny preview */
+function onPhotoChange(){
+  if (currentPreviewUrl){
+    try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){}
+    currentPreviewUrl = null;
+  }
+  const f = photoInp.files && photoInp.files[0];
+  if (!f){
+    fileInfoEl.style.display = 'none';
+    previewImg.removeAttribute('src');
+    fileNameEl.textContent = '';
+    fileSizeEl.textContent = '';
+    return;
+  }
+  // Some mobile browsers show generic names; we display whatever we get.
+  fileNameEl.textContent = f.name || '(selected image)';
+  fileSizeEl.textContent = '· ' + humanSize(f.size);
+  currentPreviewUrl = URL.createObjectURL(f);
+  previewImg.onload = () => { try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; };
+  previewImg.src = currentPreviewUrl;
+  fileInfoEl.style.display = 'block';
+}
 
 /* ===== Save (downscale + memory-safe) ===== */
+let busy=false;
 async function saveAsJpgSerial(){
-  if (isBusy) return;
-  isBusy = true; saveBtn.disabled = true;
+  if (busy) return;
+  busy = true; saveBtn.disabled = true;
 
   const raw = (serialEl.value||'').trim();
   const f   = photoInp.files && photoInp.files[0];
 
-  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); isBusy=false; saveBtn.disabled=false; return; }
-  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); isBusy=false; saveBtn.disabled=false; return; }
+  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); busy=false; saveBtn.disabled=false; return; }
+  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); busy=false; saveBtn.disabled=false; return; }
 
   // Free camera memory
   stopScan(false);
 
   let bitmap=null, dlUrl=null;
   try {
-    // Prefer createImageBitmap (faster, less memory). Fallback to <img> if needed.
+    // Efficient decode
     try {
       bitmap = await createImageBitmap(f /*, { imageOrientation:'from-image' } */);
     } catch {
@@ -197,7 +237,7 @@ async function saveAsJpgSerial(){
       }).finally(()=>{ try{ URL.revokeObjectURL(objURL); }catch(_){ } });
     }
 
-    // Downscale to keep RAM small (long side <= 1600)
+    // Downscale (long side ≤ 1600)
     const MAX = 1600;
     let w = bitmap.naturalWidth  || bitmap.width  || 1280;
     let h = bitmap.naturalHeight || bitmap.height || 720;
@@ -208,17 +248,14 @@ async function saveAsJpgSerial(){
     cnv.width = w; cnv.height = h;
     const cctx = cnv.getContext('2d', { willReadFrequently:true });
     cctx.drawImage(bitmap, 0, 0, w, h);
-    // release bitmap ASAP
     try { if (bitmap.close) bitmap.close(); } catch(_) {}
     bitmap = null;
 
-    // Encode to JPEG blob (0.85 quality)
+    // Encode to JPEG blob
     const jpegBlob = await new Promise((res, rej) =>
       cnv.toBlob(b => b ? res(b) : rej(new Error('JPEG encode failed')), 'image/jpeg', 0.85)
     );
-
-    // Free canvas memory
-    try { cnv.width = cnv.height = 0; } catch(_) {}
+    try { cnv.width = cnv.height = 0; } catch(_){}
 
     // Download as <serial>.jpg
     const outName = (safeSerial(raw) || 'photo') + '.jpg';
@@ -226,22 +263,31 @@ async function saveAsJpgSerial(){
     const a = document.createElement('a');
     a.href = dlUrl; a.download = outName;
     document.body.appendChild(a); a.click(); a.remove();
-    try { URL.revokeObjectURL(dlUrl); } catch(_) {}
+    try { URL.revokeObjectURL(dlUrl); } catch(_){}
     show(true, 'Saved as ' + outName + ' (downscaled JPEG).');
 
   } catch (e) {
     show(false, 'Save failed: ' + (e && e.message ? e.message : e));
   } finally {
-    // Fully reset file input by replacing the node (helps free memory on mobile)
+    // Clear preview + name/size
+    if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
+    previewImg.removeAttribute('src');
+    fileInfoEl.style.display = 'none';
+    fileNameEl.textContent = '';
+    fileSizeEl.textContent = '';
+
+    // Fully reset file input by replacing node (free memory) and rewire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;
+    photoInp.addEventListener('click', onPhotoClick);
+    photoInp.addEventListener('change', onPhotoChange);
 
-    // Clear fields for next unit
+    // Reset serial
     serialEl.value = '';
     setTimeout(() => serialEl.focus(), 200);
 
-    isBusy = false; saveBtn.disabled = false;
+    busy = false; saveBtn.disabled = false;
   }
 }
 
@@ -249,9 +295,19 @@ async function saveAsJpgSerial(){
 function resetAll(){
   stopScan(true);
   serialEl.value = '';
+
+  if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
+  previewImg.removeAttribute('src');
+  fileInfoEl.style.display = 'none';
+  fileNameEl.textContent = '';
+  fileSizeEl.textContent = '';
+
   const newInp = photoInp.cloneNode();
   photoInp.parentNode.replaceChild(newInp, photoInp);
   photoInp = newInp;
+  photoInp.addEventListener('click', onPhotoClick);
+  photoInp.addEventListener('change', onPhotoChange);
+
   show(true,'');
   setTimeout(() => serialEl.focus(), 200);
 }
@@ -261,6 +317,12 @@ scanBtn.addEventListener('click', startScan);
 stopBtn.addEventListener('click', () => stopScan(true));
 saveBtn.addEventListener('click', saveAsJpgSerial);
 resetBtn.addEventListener('click', resetAll);
+
+// file input handlers
+photoInp.addEventListener('click', onPhotoClick);
+photoInp.addEventListener('change', onPhotoChange);
+
+// initial focus
 setTimeout(() => serialEl.focus(), 300);
 </script>
 </body>

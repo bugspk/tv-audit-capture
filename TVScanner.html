@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TV Audit – Scan & Save as &lt;serial&gt;.jpg</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --pad:14px; --muted:#555; --btn:#2d6cdf; --ok:#0a0; --err:#d00; }
+  body { font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; }
+  .wrap { max-width:520px; margin:auto; padding:var(--pad); }
+  h2 { margin:0 0 10px 0; }
+  label { font-weight:600; display:block; margin:12px 0 6px; }
+  input[type="text"] { width:100%; padding:10px; font-size:18px; border:1px solid #ccc; border-radius:8px; }
+  button { padding:10px 14px; font-size:16px; border:0; border-radius:10px; background:var(--btn); color:#fff; }
+  button.secondary { background:#777; }
+  button.ghost { background:#eee; color:#222; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  video { width:100%; border-radius:8px; background:#000; display:none; }
+  #msg { margin-top:10px; font-size:14px; }
+  .tips { margin-top:12px; color:var(--muted); font-size:12px; }
+  details { margin:6px 0 10px; }
+  summary { cursor:pointer; color:#333; font-weight:600; }
+  summary::marker { color:#888; }
+  ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>TV Scranner v0.6</h2>
+
+  <!-- Collapsed usage guide -->
+  <details>
+    <summary>How to use (tap to expand)</summary>
+    <ol>
+      <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually).</li>
+      <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
+      <li>Tap <b>Save as JPG</b> to download it as <code>&lt;serial&gt;.jpg</code> (original image, no conversion).</li>
+      <li><b>After saving, the page auto-reloads</b> to keep memory fresh for the next TV.</li>
+      <li>Upload saved photos to your Google Drive <code>YYYY_MM</code> folder later.</li>
+    </ol>
+  </details>
+
+  <label>Serial</label>
+  <div class="row">
+    <input id="serial" type="text" placeholder="Scan or type serial...">
+    <button id="scanBtn" type="button" class="ghost" title="Scan barcode">Scan</button>
+    <button id="stopBtn" type="button" class="secondary" style="display:none;">Stop</button>
+  </div>
+
+  <video id="video" playsinline muted></video>
+  <div id="scanMsg" class="tips"></div>
+
+  <label>Photo</label>
+  <!-- Keep capture to open the system camera directly -->
+  <input id="photo" type="file" accept="image/*" capture="environment">
+
+  <div class="actions">
+    <button id="saveBtn">Save as JPG</button>
+    <button id="resetBtn" class="secondary">Reset</button>
+  </div>
+
+  <div id="msg"></div>
+</div>
+
+<script>
+/* ===== Elements ===== */
+const serialEl = document.getElementById('serial');
+const scanBtn  = document.getElementById('scanBtn');
+const stopBtn  = document.getElementById('stopBtn');
+const videoEl  = document.getElementById('video');
+const scanMsg  = document.getElementById('scanMsg');
+const photoInp = document.getElementById('photo');
+const saveBtn  = document.getElementById('saveBtn');
+const resetBtn = document.getElementById('resetBtn');
+const msgEl    = document.getElementById('msg');
+
+let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
+
+/* ===== Helpers ===== */
+function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
+function safeSerial(s){ return (s||'').trim().replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,''); }
+
+/* ===== Scanner ===== */
+function startScan(){
+  if(!('BarcodeDetector' in window)){ alert('Barcode scanning not supported on this browser.'); return; }
+  try {
+    detector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','itf','codabar'] });
+  } catch(e) { alert('Scanner init failed: '+e); return; }
+
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false })
+  .then(s => {
+    stream = s;
+    videoEl.srcObject = s;
+    return videoEl.play();
+  })
+  .then(() => {
+    videoEl.style.display = 'block';
+    scanBtn.style.display = 'none';
+    stopBtn.style.display = 'inline-block';
+    scanMsg.textContent = 'Scanning...';
+    // Make sure camera is visible without manual scroll
+    setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
+    running = true;
+    loopScan();
+  })
+  .catch(e => alert('Camera error: '+e.message));
+}
+
+function loopScan(){
+  if(!running) return;
+  if(!canvas){
+    canvas = document.createElement('canvas');
+    canvas.width = 640; canvas.height = 480;
+    ctx = canvas.getContext('2d', { willReadFrequently:true });
+  }
+  try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch(e){}
+  detector.detect(canvas).then(results => {
+    if(results && results.length){
+      const code = (results[0].rawValue || results[0].displayValue || '').trim();
+      if(code){
+        serialEl.value = code;
+        stopScan(true);
+        show(true,'Scanned: '+code);
+      }
+    }
+    loopId = requestAnimationFrame(loopScan);
+  }).catch(() => { loopId = requestAnimationFrame(loopScan); });
+}
+
+function stopScan(hide){
+  running = false;
+  if(loopId) cancelAnimationFrame(loopId);
+  if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){ } stream=null; }
+  if(hide){ videoEl.style.display='none'; scanMsg.textContent=''; }
+  scanBtn.style.display='inline-block'; stopBtn.style.display='none';
+  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){ } }
+  canvas = ctx = null;
+}
+
+/* ===== Kill scanner BEFORE opening the camera picker (frees RAM) ===== */
+photoInp.addEventListener('click', () => { stopScan(true); });
+
+/* ===== Save (rename original; minimal memory) ===== */
+function saveOriginalAsJpgName(){
+  const raw = serialEl.value.trim();
+  const f   = photoInp.files[0];
+  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
+  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); return; }
+
+  // Double-safety: ensure scanner is off before we create the blob URL
+  stopScan(true);
+
+  const safe = safeSerial(raw) || 'photo';
+  const outName = safe + '.jpg'; // filename only; no conversion
+
+  try {
+    const a   = document.createElement('a');
+    const url = URL.createObjectURL(f);
+    a.href = url; a.download = outName;
+    document.body.appendChild(a); a.click(); a.remove();
+    try { URL.revokeObjectURL(url); } catch(_){}
+    show(true, 'Saved as ' + outName + ' (original image; no conversion).');
+  } catch (e) {
+    show(false, 'Save failed: ' + (e && e.message ? e.message : e));
+  }
+
+  // Hard reset memory after each save (prevents mobile leaks after capture)
+  setTimeout(() => location.reload(), 400);
+}
+
+/* ===== Manual Reset (if needed) ===== */
+function resetAll(){
+  stopScan(true);
+  serialEl.value = '';
+  try { photoInp.value = ''; } catch(_){}
+  show(true,'');
+  setTimeout(() => serialEl.focus(), 200);
+}
+
+/* ===== Wire up ===== */
+scanBtn.addEventListener('click', startScan);
+stopBtn.addEventListener('click', () => stopScan(true));
+saveBtn.addEventListener('click', saveOriginalAsJpgName);
+resetBtn.addEventListener('click', resetAll);
+setTimeout(() => serialEl.focus(), 300);
+</script>
+</body>
+</html>

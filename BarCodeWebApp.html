@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TV Audit – Serial → JPG</title>
+<style>
+  body{font-family:system-ui, Arial; padding:16px; max-width:520px; margin:auto;}
+  #scanWrap{display:none;margin-top:10px}
+  video{width:100%; border-radius:8px; background:#000}
+  .row{display:flex; gap:8px; align-items:center}
+  button{padding:10px 14px; font-size:16px}
+  input[type=text]{flex:1; padding:10px; font-size:18px}
+  #msg{margin-top:12px; font-size:14px}
+</style>
+<h2>TV Audit – Save as &lt;serial&gt;.jpg</h2>
+<p>1) Scan or type Serial  •  2) Take Photo  •  3) Save (downloads &lt;serial&gt;.jpg)</p>
+
+<label>Serial</label>
+<div class="row">
+  <input id="serial" type="text" placeholder="Scan/type serial…">
+  <button id="scanBtn">Scan</button>
+  <button id="stopBtn" style="display:none">Stop</button>
+</div>
+
+<div id="scanWrap">
+  <video id="video" playsinline muted></video>
+  <div id="scanMsg">Point camera at the barcode…</div>
+</div>
+
+<br>
+<label>Photo</label><br>
+<input id="photo" type="file" accept="image/*" capture="environment"><br><br>
+
+<button id="saveBtn">Save as &lt;serial&gt;.jpg</button>
+<div id="msg"></div>
+
+<script>
+const serialEl = document.getElementById('serial');
+const scanBtn  = document.getElementById('scanBtn');
+const stopBtn  = document.getElementById('stopBtn');
+const scanWrap = document.getElementById('scanWrap');
+const video    = document.getElementById('video');
+const photoInp = document.getElementById('photo');
+const msgEl    = document.getElementById('msg');
+
+let stream=null, detector=null, running=false, tick=null, canvas=null, ctx=null;
+
+function show(ok, t){ msgEl.style.color = ok ? '#0a0' : '#d00'; msgEl.textContent = t; }
+function supportsBD(){ return 'BarcodeDetector' in window; }
+
+function startScan(){
+  if (!supportsBD()){ show(false,'Barcode scan not supported; type the serial.'); return; }
+  try{
+    detector = new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf','codabar']});
+  }catch(e){ show(false,'BarcodeDetector init failed: '+e); return; }
+
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false})
+  .then(s=>{
+    stream=s; video.srcObject=s; return video.play();
+  })
+  .then(()=>{
+    if (video.readyState<2) return new Promise(res=>video.onloadedmetadata=res);
+  })
+  .then(()=>{
+    canvas=document.createElement('canvas');
+    canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
+    ctx=canvas.getContext('2d',{willReadFrequently:true});
+    scanWrap.style.display='block'; scanBtn.style.display='none'; stopBtn.style.display='inline-block';
+    running=true; scanLoop();
+  })
+  .catch(e=>show(false,'Camera error: '+e));
+}
+
+function scanLoop(){
+  if(!running) return;
+  try{ ctx.drawImage(video,0,0,canvas.width,canvas.height); }catch(e){}
+  detector.detect(canvas).then(results=>{
+    if(results && results.length){
+      const txt=(results[0].rawValue||results[0].displayValue||'').trim();
+      if(txt){ serialEl.value=txt; stopScan(true); }
+    }
+  }).catch(()=>{});
+  tick=setTimeout(scanLoop,100);
+}
+
+function stopScan(hide){
+  running=false; if(tick){clearTimeout(tick); tick=null;}
+  if(stream){ try{stream.getTracks().forEach(t=>t.stop());}catch(e){} stream=null; }
+  if(hide) scanWrap.style.display='none';
+  scanBtn.style.display='inline-block'; stopBtn.style.display='none';
+}
+
+async function saveAsSerialJpg(){
+  const serial=(serialEl.value||'').trim();
+  if(!serial) return alert('Enter the serial first.');
+  const f=photoInp.files[0];
+  if(!f) return alert('Take/choose a photo.');
+  // read image, convert to JPEG blob
+  const dataUrl = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); });
+  const img = new Image(); img.decoding='async';
+  await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=dataUrl; });
+  const cnv=document.createElement('canvas');
+  cnv.width=img.naturalWidth; cnv.height=img.naturalHeight;
+  cnv.getContext('2d').drawImage(img,0,0);
+  const jpegDataUrl = cnv.toDataURL('image/jpeg', 0.92);
+  // trigger download as <serial>.jpg
+  const a=document.createElement('a');
+  a.href=jpegDataUrl;
+  const safeSerial=serial.replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,'')||'photo';
+  a.download=safeSerial+'.jpg';
+  document.body.appendChild(a); a.click(); a.remove();
+  show(true,'Saved locally as '+safeSerial+'.jpg (check Downloads).');
+  // optional: reset photo picker
+  photoInp.value='';
+  serialEl.focus();
+}
+
+scanBtn.addEventListener('click', ()=>startScan());
+stopBtn.addEventListener('click', ()=>stopScan(true));
+document.getElementById('saveBtn').addEventListener('click', ()=>saveAsSerialJpg());
+setTimeout(()=>serialEl.focus(),400);
+</script>
+</html>

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>TV Audit – Scan & Save as &lt;serial&gt;.jpg</title>
+<title>TV Audit – Scan from Photo & Save as &lt;serial&gt;.jpg</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { --pad:14px; --muted:#555; --btn:#2d6cdf; --ok:#0a0; --err:#d00; }
@@ -16,75 +16,46 @@
   button.ghost { background:#eee; color:#222; }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
-  video { width:100%; border-radius:8px; background:#000; display:none; }
   #msg { margin-top:10px; font-size:14px; }
   .tips { margin-top:12px; color:var(--muted); font-size:12px; }
   details { margin:6px 0 10px; }
   summary { cursor:pointer; color:#333; font-weight:600; }
   summary::marker { color:#888; }
   ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
+
   .fileinfo { margin-top:8px; font-size:13px; color:#333; display:none; }
   .fileinfo .name { font-weight:600; }
   .preview { margin-top:6px; }
   .preview img { max-width:100%; max-height:160px; border-radius:8px; display:block; }
-
-  /* Camera controls overlay */
-  .camToolbar {
-    display:none;
-    gap:8px; align-items:center; flex-wrap:wrap;
-    margin:8px 0 0;
-  }
-  .camToolbar .group {
-    display:flex; gap:6px; align-items:center;
-    background:#f5f5f5; border-radius:8px; padding:6px 8px;
-  }
-  .camToolbar label { margin:0; font-weight:600; font-size:12px; color:#333; }
-  .camToolbar input[type="range"] { width:140px; }
 </style>
+<!-- html5-qrcode for decoding barcodes from an image file -->
+<script src="https://unpkg.com/html5-qrcode"></script>
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.92</h2>
+  <h2>Serial Scanner v0.93</h2>
 
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan</b> (or type Serial). You can now <b>tap on the preview to focus</b> and use <b>zoom/AF/torch</b> (if supported).</li>
-      <li>Tap <b>Take Photo</b>, then <b>OK</b>. Filename/thumbnail show below.</li>
-      <li>Tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code> (downscaled; memory-safe).</li>
+      <li>Tap <b>Scan from Photo</b> → native camera opens → capture the barcode image (autofocus works in native camera).</li>
+      <li>The image is decoded locally and fills the <b>Serial</b> field.</li>
+      <li>Take the <b>Audit Photo</b> (the actual TV picture), verify filename/thumbnail, then tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code>.</li>
+      <li>Upload saved JPGs to your Google Drive <code>YYYY_MM</code> folder later, then run your Sheet’s Insert/Update.</li>
     </ol>
   </details>
 
   <label>Serial</label>
   <div class="row">
     <input id="serial" type="text" placeholder="Scan or type serial...">
-    <button id="scanBtn" type="button" class="ghost" title="Scan barcode">Scan</button>
-    <button id="stopBtn" type="button" class="secondary" style="display:none;">Stop</button>
+    <button id="scanFromPhotoBtn" type="button" class="ghost">Scan from Photo</button>
+    <!-- hidden file input used for barcode scan (opens native camera) -->
+    <input id="scanPhoto" type="file" accept="image/*" capture="environment" style="display:none">
   </div>
+  <!-- hidden target element required by html5-qrcode; we don't display it -->
+  <div id="reader" style="display:none;"></div>
 
-  <video id="video" playsinline muted></video>
-  <div id="scanMsg" class="tips"></div>
-
-  <!-- Camera manual controls (shown only if supported) -->
-  <div id="camToolbar" class="camToolbar">
-    <div class="group" id="zoomGroup" style="display:none;">
-      <label for="zoomRange">Zoom</label>
-      <input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1">
-      <span id="zoomVal" class="tips">1x</span>
-    </div>
-    <div class="group" id="afGroup" style="display:none;">
-      <button id="afSingleBtn" type="button" class="ghost" title="Autofocus single-shot">AF (single)</button>
-    </div>
-    <div class="group" id="torchGroup" style="display:none;">
-      <button id="torchBtn" type="button" class="ghost" title="Toggle torch">Torch: Off</button>
-    </div>
-    <div class="group" id="focusDistGroup" style="display:none;">
-      <label for="focusRange">Focus</label>
-      <input id="focusRange" type="range" min="0" max="1" step="0.01" value="0.5">
-    </div>
-  </div>
-
-  <label>Photo</label>
+  <label>Audit Photo</label>
   <input id="photo" type="file" accept="image/*" capture="environment">
   <div id="fileInfo" class="fileinfo">
     <span class="name"></span> <span class="size tips"></span>
@@ -102,11 +73,9 @@
 <script>
 /* ===== Elements ===== */
 const serialEl = document.getElementById('serial');
-const scanBtn  = document.getElementById('scanBtn');
-const stopBtn  = document.getElementById('stopBtn');
-const videoEl  = document.getElementById('video');
-const scanMsg  = document.getElementById('scanMsg');
-let   photoInp = document.getElementById('photo');
+const scanFromPhotoBtn = document.getElementById('scanFromPhotoBtn');
+let   scanPhotoInput   = document.getElementById('scanPhoto'); // will be replaced to reset between scans
+let   photoInp         = document.getElementById('photo');     // will be replaced to free memory
 const saveBtn  = document.getElementById('saveBtn');
 const resetBtn = document.getElementById('resetBtn');
 const msgEl    = document.getElementById('msg');
@@ -116,22 +85,9 @@ const fileNameEl = fileInfoEl.querySelector('.name');
 const fileSizeEl = fileInfoEl.querySelector('.size');
 const previewImg = document.getElementById('previewImg');
 
-/* Camera controls */
-const camToolbar   = document.getElementById('camToolbar');
-const zoomGroup    = document.getElementById('zoomGroup');
-const zoomRange    = document.getElementById('zoomRange');
-const zoomVal      = document.getElementById('zoomVal');
-const afGroup      = document.getElementById('afGroup');
-const afSingleBtn  = document.getElementById('afSingleBtn');
-const torchGroup   = document.getElementById('torchGroup');
-const torchBtn     = document.getElementById('torchBtn');
-const focusDistGroup = document.getElementById('focusDistGroup');
-const focusRange   = document.getElementById('focusRange');
-
-let stream=null, detector=null, running=false, loopId=null, canvas=null, ctx=null;
-let busy=false, currentPreviewUrl=null, waitingCapture=false;
-let track=null, caps=null, settings=null;
-let torchOn=false;
+let busy=false, currentPreviewUrl=null;
+/* Android quirk: sometimes camera returns without firing change */
+let waitingCaptureScan=false, waitingCapturePhoto=false;
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
@@ -143,223 +99,83 @@ function humanSize(bytes){
   return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + units[i];
 }
 
-/* ===== Scanner with manual focus controls ===== */
-async function startScan(){
-  if(!('BarcodeDetector' in window)){
-    show(false,'Barcode scanning not supported; type the serial.');
-    return;
-  }
+/* ===== Scan from Photo (native camera capture) ===== */
+scanFromPhotoBtn.addEventListener('click', () => {
+  waitingCaptureScan = true;
+  scanPhotoInput.click();
+});
+
+async function handleScanPhotoFile(file){
+  if (!file) return;
   try {
-    detector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf','codabar'] });
-  } catch(e) {
-    show(false,'Scanner init failed: '+e);
-    return;
-  }
+    // Use html5-qrcode to decode a file (no live camera)
+    const scanner = new Html5Qrcode("reader");
+    const result = await scanner.scanFileV2(file, false); // false: don't try to show image in a UI
+    await scanner.clear();
 
-  const constraints = {
-    video: {
-      facingMode: { ideal: 'environment' },
-      width:  { ideal: 1920 },
-      height: { ideal: 1080 },
-      focusMode: 'continuous',
-      advanced: [{ focusMode: 'continuous' }]
-    },
-    audio: false
-  };
-
-  try {
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    videoEl.srcObject = stream;
-    await videoEl.play();
-    if (videoEl.readyState < 2) await new Promise(res => videoEl.onloadedmetadata = res);
-
-    /* Track + capabilities */
-    track = stream.getVideoTracks()[0];
-    settings = track.getSettings ? track.getSettings() : {};
-    caps = track.getCapabilities ? track.getCapabilities() : {};
-
-    // Try to reinforce AF
-    try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch(_){}
-
-    // Build detection canvas from real video size
-    const vw = videoEl.videoWidth  || 1280;
-    const vh = videoEl.videoHeight || 720;
-    canvas = document.createElement('canvas');
-    canvas.width = vw; canvas.height = vh;
-    ctx = canvas.getContext('2d', { willReadFrequently:true });
-
-    // UI
-    videoEl.style.display = 'block';
-    scanBtn.style.display = 'none';
-    stopBtn.style.display = 'inline-block';
-    scanMsg.textContent = 'Scanning… Tap video to focus.';
-    setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
-    running = true;
-    loopScan();
-
-    // Setup manual controls if supported
-    setupCameraControls();
-
-  } catch(e){
-    const hint = (location.protocol==='file:'? 'Opened via file:// — camera blocked. Host over HTTPS.' : 'Permission blocked; allow Camera in site settings.');
-    show(false,'Camera error: '+(e && e.name ? e.name : e)+'. '+hint);
+    const code = (result && result.decodedText || '').trim();
+    if (code){
+      serialEl.value = code;
+      show(true, 'Scanned from photo: ' + code);
+    } else {
+      show(false, 'No barcode found in the selected photo.');
+    }
+  } catch (e) {
+    show(false, 'Scan from photo failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    // Reset the scan input for the next use
+    const newInp = scanPhotoInput.cloneNode();
+    scanPhotoInput.parentNode.replaceChild(newInp, scanPhotoInput);
+    scanPhotoInput = newInp;
+    wireScanPhotoHandlers();
   }
 }
 
-function loopScan(){
-  if(!running) return;
-  try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch(e){}
-  detector.detect(canvas).then(results => {
-    if(results && results.length){
-      const code = (results[0].rawValue || results[0].displayValue || '').trim();
-      if(code){
-        serialEl.value = code;
-        stopScan(true);
-        show(true,'Scanned: '+code);
-      }
-    }
-    loopId = requestAnimationFrame(loopScan);
-  }).catch(() => { loopId = requestAnimationFrame(loopScan); });
+/* Android quirk handling for scan input */
+function onScanPhotoChange(){
+  waitingCaptureScan = false;
+  const f = scanPhotoInput.files && scanPhotoInput.files[0];
+  if (f) handleScanPhotoFile(f);
 }
-
-function stopScan(hide){
-  running = false;
-  if(loopId) { cancelAnimationFrame(loopId); loopId=null; }
-  if(stream){
-    try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
-    stream=null; track=null; caps=null; settings=null;
-  }
-  if(hide){
-    videoEl.style.display='none';
-    scanMsg.textContent='';
-  }
-  camToolbar.style.display = 'none';
-  scanBtn.style.display='inline-block';
-  stopBtn.style.display='none';
-  if(canvas){ try{ canvas.width = canvas.height = 0; }catch(_){}
-    canvas = null; ctx = null;
-  }
-  torchOn = false;
-}
-
-/* ===== Manual camera controls ===== */
-function setupCameraControls(){
-  if (!track || !track.getCapabilities) return;
-
-  const c = track.getCapabilities();
-  camToolbar.style.display = 'flex';
-
-  // Zoom
-  if (c.zoom) {
-    const min = c.zoom.min || 1, max = c.zoom.max || 1, step = c.zoom.step || 0.1;
-    zoomRange.min = min; zoomRange.max = max; zoomRange.step = step;
-    const s = track.getSettings ? track.getSettings() : {};
-    const cur = s.zoom || 1;
-    zoomRange.value = cur;
-    zoomVal.textContent = `${cur.toFixed(1)}x`;
-    zoomGroup.style.display = 'flex';
-
-    zoomRange.oninput = async () => {
-      const v = Number(zoomRange.value);
-      zoomVal.textContent = `${v.toFixed(1)}x`;
-      try { await track.applyConstraints({ advanced: [{ zoom: v }] }); } catch(_){}
-    };
-  } else {
-    zoomGroup.style.display = 'none';
-  }
-
-  // Torch
-  if (c.torch) {
-    torchGroup.style.display = 'flex';
-    torchBtn.onclick = async () => {
-      torchOn = !torchOn;
-      try { await track.applyConstraints({ advanced: [{ torch: torchOn }] }); } catch(_){ torchOn = !torchOn; }
-      torchBtn.textContent = `Torch: ${torchOn ? 'On' : 'Off'}`;
-    };
-  } else {
-    torchGroup.style.display = 'none';
-  }
-
-  // AF single-shot
-  const hasAFSingle = c.focusMode && Array.isArray(c.focusMode) && c.focusMode.includes('single-shot');
-  if (hasAFSingle) {
-    afGroup.style.display = 'flex';
-    afSingleBtn.onclick = async () => {
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); } catch(_){}
-    };
-  } else {
-    afGroup.style.display = 'none';
-  }
-
-  // Manual focus distance
-  if (c.focusDistance && typeof c.focusDistance.min === 'number' && typeof c.focusDistance.max === 'number') {
-    focusDistGroup.style.display = 'flex';
-    const min = c.focusDistance.min;
-    const max = c.focusDistance.max;
-    focusRange.min = 0; focusRange.max = 1; focusRange.step = 0.01;
-
-    // map slider 0..1 to focusDistance min..max
-    const applyFocus = async (norm) => {
-      const dist = min + norm * (max - min);
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: dist }] }); } catch(_){}
-    };
-    focusRange.oninput = () => applyFocus(Number(focusRange.value));
-  } else {
-    focusDistGroup.style.display = 'none';
-  }
-
-  // Tap to focus: use pointsOfInterest if supported; else map to focusDistance if present; else trigger single-shot AF
-  videoEl.onclick = async (ev) => {
-    if (!track) return;
-    const rect = videoEl.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) / rect.width;   // 0..1
-    const y = (ev.clientY - rect.top)  / rect.height;  // 0..1
-
-    let tried = false;
-
-    // pointsOfInterest (best)
-    if (c.pointsOfInterest) {
-      try {
-        await track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }] }] });
-        tried = true;
-      } catch(_) {}
-    }
-
-    // manual focus distance fallback: near if lower half, far if upper (or map by x)
-    if (!tried && c.focusDistance && typeof c.focusDistance.min === 'number' && typeof c.focusDistance.max === 'number') {
-      const norm = 1 - y; // tap lower = closer, upper = farther (tweakable)
-      const dist = c.focusDistance.min + norm * (c.focusDistance.max - c.focusDistance.min);
-      try {
-        await track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: dist }] });
-        tried = true;
-      } catch(_) {}
-    }
-
-    // single-shot AF as last resort
-    if (!tried && c.focusMode && c.focusMode.includes('single-shot')) {
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); } catch(_) {}
-    }
-  };
-}
-
-/* ===== Android photo picker quirks ===== */
-function onPhotoClick(){ stopScan(true); waitingCapture = true; }
-function onPhotoChange(){ waitingCapture = false; renderSelectedFile(); }
 function onVisibilityChange(){
-  if (!document.hidden && waitingCapture){
-    waitingCapture = false;
-    let tries = 0;
-    (function poll(){
-      tries++;
-      if (photoInp.files && photoInp.files[0]) { renderSelectedFile(); return; }
-      if (tries > 20) return;
-      setTimeout(poll, 100);
-    })();
+  // Called on page resume from native camera
+  if (!document.hidden) {
+    // Handle scan input polling
+    if (waitingCaptureScan){
+      waitingCaptureScan = false;
+      let tries = 0;
+      (function poll(){
+        tries++;
+        if (scanPhotoInput.files && scanPhotoInput.files[0]) { handleScanPhotoFile(scanPhotoInput.files[0]); return; }
+        if (tries > 20) return;
+        setTimeout(poll, 100);
+      })();
+    }
+    // Handle audit photo input polling
+    if (waitingCapturePhoto){
+      waitingCapturePhoto = false;
+      let tries = 0;
+      (function poll2(){
+        tries++;
+        if (photoInp.files && photoInp.files[0]) { renderSelectedAuditPhoto(); return; }
+        if (tries > 20) return;
+        setTimeout(poll2, 100);
+      })();
+    }
   }
 }
 document.addEventListener('visibilitychange', onVisibilityChange);
 
-function renderSelectedFile(){
+function wireScanPhotoHandlers(){
+  scanPhotoInput.addEventListener('change', onScanPhotoChange);
+}
+wireScanPhotoHandlers();
+
+/* ===== Audit Photo: preview name/size + thumbnail (with Android quirks) ===== */
+function onAuditPhotoClick(){ waitingCapturePhoto = true; }
+function onAuditPhotoChange(){ waitingCapturePhoto = false; renderSelectedAuditPhoto(); }
+
+function renderSelectedAuditPhoto(){
   if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
   const f = photoInp.files && photoInp.files[0];
   if (!f){
@@ -386,15 +202,14 @@ async function saveAsJpgSerial(){
   const raw = (serialEl.value||'').trim();
   const f   = photoInp.files && photoInp.files[0];
 
-  if(!raw){ alert('Enter the serial first.'); serialEl.focus(); busy=false; saveBtn.disabled=false; return; }
-  if(!f){ alert('Take/choose a photo.'); photoInp.focus(); busy=false; saveBtn.disabled=false; return; }
-
-  stopScan(false); // free camera memory
+  if(!raw){ alert('Enter the serial first (or use Scan from Photo).'); serialEl.focus(); busy=false; saveBtn.disabled=false; return; }
+  if(!f){ alert('Take/choose an audit photo.'); photoInp.focus(); busy=false; saveBtn.disabled=false; return; }
 
   let bitmap=null, dlUrl=null;
   try {
+    // Efficient decode
     try {
-      bitmap = await createImageBitmap(f);
+      bitmap = await createImageBitmap(f /*, { imageOrientation:'from-image' } */);
     } catch {
       const objURL = URL.createObjectURL(f);
       bitmap = await new Promise((resolve,reject)=>{
@@ -402,7 +217,7 @@ async function saveAsJpgSerial(){
       }).finally(()=>{ try{ URL.revokeObjectURL(objURL); }catch(_){ } });
     }
 
-    // Downscale (long side ≤ 1600)
+    // Downscale (long side ≤ 1600) to avoid memory issues
     const MAX = 1600;
     let w = bitmap.naturalWidth  || bitmap.width  || 1280;
     let h = bitmap.naturalHeight || bitmap.height || 720;
@@ -432,19 +247,22 @@ async function saveAsJpgSerial(){
   } catch (e) {
     show(false, 'Save failed: ' + (e && e.message ? e.message : e));
   } finally {
+    // Clear audit preview + name/size
     if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
     previewImg.removeAttribute('src');
     fileInfoEl.style.display = 'none';
     fileNameEl.textContent = '';
     fileSizeEl.textContent = '';
 
+    // Fully reset the audit photo input and rewire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;
-    photoInp.addEventListener('click', onPhotoClick);
-    photoInp.addEventListener('change', onPhotoChange);
-    photoInp.addEventListener('input', onPhotoChange);
+    photoInp.addEventListener('click', onAuditPhotoClick);
+    photoInp.addEventListener('change', onAuditPhotoChange);
+    photoInp.addEventListener('input', onAuditPhotoChange);
 
+    // Keep serial so you can re-save if needed? (Clear for next TV:)
     serialEl.value = '';
     setTimeout(() => serialEl.focus(), 200);
 
@@ -454,7 +272,6 @@ async function saveAsJpgSerial(){
 
 /* ===== Manual Reset ===== */
 function resetAll(){
-  stopScan(true);
   serialEl.value = '';
 
   if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
@@ -466,24 +283,22 @@ function resetAll(){
   const newInp = photoInp.cloneNode();
   photoInp.parentNode.replaceChild(newInp, photoInp);
   photoInp = newInp;
-  photoInp.addEventListener('click', onPhotoClick);
-  photoInp.addEventListener('change', onPhotoChange);
-  photoInp.addEventListener('input', onPhotoChange);
+  photoInp.addEventListener('click', onAuditPhotoClick);
+  photoInp.addEventListener('change', onAuditPhotoChange);
+  photoInp.addEventListener('input', onAuditPhotoChange);
 
   show(true,'');
   setTimeout(() => serialEl.focus(), 200);
 }
 
 /* ===== Wire up ===== */
-scanBtn.addEventListener('click', startScan);
-stopBtn.addEventListener('click', () => stopScan(true));
 saveBtn.addEventListener('click', saveAsJpgSerial);
 resetBtn.addEventListener('click', resetAll);
 
-// file input handlers (Android quirks)
-photoInp.addEventListener('click', onPhotoClick);
-photoInp.addEventListener('change', onPhotoChange);
-photoInp.addEventListener('input', onPhotoChange);
+// audit photo handlers (Android quirks)
+photoInp.addEventListener('click', onAuditPhotoClick);
+photoInp.addEventListener('change', onAuditPhotoChange);
+photoInp.addEventListener('input', onAuditPhotoChange);
 
 // initial focus
 setTimeout(() => serialEl.focus(), 300);

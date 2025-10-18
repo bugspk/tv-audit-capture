@@ -14,12 +14,12 @@
   button { padding:10px 14px; font-size:16px; border:0; border-radius:10px; background:var(--btn); color:#fff; }
   button.secondary { background:#777; }
   button.ghost { background:#eee; color:#222; }
-  .row { display:flex; gap:8px; align-items:center; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
   video { width:100%; border-radius:8px; background:#000; display:none; }
   #msg { margin-top:10px; font-size:14px; }
   .tips { margin-top:12px; color:var(--muted); font-size:12px; }
-  details { margin: 6px 0 10px; }
+  details { margin:6px 0 10px; }
   summary { cursor:pointer; color:#333; font-weight:600; }
   summary::marker { color:#888; }
   ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
@@ -27,7 +27,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h2>TV Serial Number Scanner v0.5</h2>
+  <h2>TV Serial Scanner v0.6</h2>
 
   <!-- Collapsed usage guide -->
   <details>
@@ -36,7 +36,7 @@
       <li>Tap <b>Scan</b> to detect the TV barcode (or type serial manually).</li>
       <li>Tap <b>Take Photo</b> to capture the TV picture.</li>
       <li>Tap <b>Save as JPG</b> to download it as <code>&lt;serial&gt;.jpg</code> (original image, no conversion).</li>
-      <li><b>Tap Reset</b> before moving to the next TV.</li>
+      <li><b>After saving, the page auto-reloads</b> to keep memory fresh for the next TV.</li>
       <li>Upload saved photos to your Google Drive <code>YYYY_MM</code> folder later.</li>
     </ol>
   </details>
@@ -52,6 +52,7 @@
   <div id="scanMsg" class="tips"></div>
 
   <label>Photo</label>
+  <!-- Keep capture to open the system camera directly -->
   <input id="photo" type="file" accept="image/*" capture="environment">
 
   <div class="actions">
@@ -85,10 +86,7 @@ function startScan(){
   if(!('BarcodeDetector' in window)){ alert('Barcode scanning not supported on this browser.'); return; }
   try {
     detector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','itf','codabar'] });
-  } catch(e) {
-    alert('Scanner init failed: '+e);
-    return;
-  }
+  } catch(e) { alert('Scanner init failed: '+e); return; }
 
   navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false })
   .then(s => {
@@ -101,7 +99,7 @@ function startScan(){
     scanBtn.style.display = 'none';
     stopBtn.style.display = 'inline-block';
     scanMsg.textContent = 'Scanning...';
-    // Make sure camera is visible without scrolling
+    // Make sure camera is visible without manual scroll
     setTimeout(() => videoEl.scrollIntoView({ behavior:'smooth', block:'start' }), 50);
     running = true;
     loopScan();
@@ -140,6 +138,9 @@ function stopScan(hide){
   canvas = ctx = null;
 }
 
+/* ===== Kill scanner BEFORE opening the camera picker (frees RAM) ===== */
+photoInp.addEventListener('click', () => { stopScan(true); });
+
 /* ===== Save (rename original; minimal memory) ===== */
 function saveOriginalAsJpgName(){
   const raw = serialEl.value.trim();
@@ -147,27 +148,28 @@ function saveOriginalAsJpgName(){
   if(!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
   if(!f){ alert('Take/choose a photo.'); photoInp.focus(); return; }
 
-  // Free camera memory if scanning was used
-  stopScan(false);
+  // Double-safety: ensure scanner is off before we create the blob URL
+  stopScan(true);
 
   const safe = safeSerial(raw) || 'photo';
   const outName = safe + '.jpg'; // filename only; no conversion
 
-  const a   = document.createElement('a');
-  const url = URL.createObjectURL(f);
-  a.href = url; a.download = outName;
-  document.body.appendChild(a); a.click(); a.remove();
-  try { URL.revokeObjectURL(url); } catch(_){}
+  try {
+    const a   = document.createElement('a');
+    const url = URL.createObjectURL(f);
+    a.href = url; a.download = outName;
+    document.body.appendChild(a); a.click(); a.remove();
+    try { URL.revokeObjectURL(url); } catch(_){}
+    show(true, 'Saved as ' + outName + ' (original image; no conversion).');
+  } catch (e) {
+    show(false, 'Save failed: ' + (e && e.message ? e.message : e));
+  }
 
-  show(true, 'Saved as ' + outName + ' (original image; no conversion).');
-  // Clear for the next TV
-  serialEl.value = '';
-  try { photoInp.value = ''; } catch(_){}
-  setTimeout(() => serialEl.scrollIntoView({behavior:'smooth', block:'center'}), 60);
-  setTimeout(() => serialEl.focus(), 120);
+  // Hard reset memory after each save (prevents mobile leaks after capture)
+  setTimeout(() => location.reload(), 400);
 }
 
-/* ===== Reset ===== */
+/* ===== Manual Reset (if needed) ===== */
 function resetAll(){
   stopScan(true);
   serialEl.value = '';

@@ -1,122 +1,97 @@
 <!doctype html>
-<html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TV Audit — Rename to <serial>.ext</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TV Audit – Serial → JPG</title>
 <style>
-  body{font-family:system-ui, Arial; padding:16px; max-width:520px; margin:auto;}
-  #scanWrap{display:none;margin-top:10px}
-  video{width:100%; border-radius:8px; background:#000}
-  .row{display:flex; gap:8px; align-items:center}
-  button{padding:10px 14px; font-size:16px}
-  input[type=text]{flex:1; padding:10px; font-size:18px}
-  #msg{margin-top:12px; font-size:14px}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+  .wrap{max-width:520px;margin:0 auto;padding:16px}
+  h2{margin:0 0 8px 0}
+  p{color:#555;margin:8px 0}
+  label{font-weight:600;display:block;margin:12px 0 6px}
+  input[type=text]{width:100%;padding:10px;font-size:18px;border:1px solid #ccc;border-radius:8px}
+  input[type=file]{font-size:16px}
+  button{padding:10px 14px;font-size:16px;border:0;border-radius:10px;background:#2d6cdf;color:#fff}
+  .ghost{background:#eee;color:#222}
+  #msg{margin-top:12px;font-size:14px}
 </style>
-<h2>TV Audit – Save as &lt;serial&gt;.jpg</h2>
-<p>1) Scan or type Serial  •  2) Take Photo  •  3) Save (downloads &lt;serial&gt;.jpg)</p>
+</head>
+<body>
+<div class="wrap">
+  <h2>TV Audit v0.1 — Rename to &lt;serial&gt;.ext</h2>
+  <p>Pick a saved photo (from your Camera/Photos), enter the Serial, and download it as <code>&lt;serial&gt;.ext</code>. Then upload those files to your Google Drive audit folder.</p>
 
-<label>Serial</label>
-<div class="row">
-  <input id="serial" type="text" placeholder="Scan/type serial…">
-  <button id="scanBtn">Scan</button>
-  <button id="stopBtn" style="display:none">Stop</button>
+  <label>Serial</label>
+  <input id="serial" type="text" placeholder="Enter serial (paste from barcode scanner app if needed)…">
+
+  <label>Photo (choose from library)</label>
+  <!-- IMPORTANT: remove capture attr; let the camera app save first, then choose -->
+  <input id="file" type="file" accept="image/*">
+
+  <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <button id="save">Save as &lt;serial&gt;.ext</button>
+    <button id="reset" class="ghost">Reset</button>
+  </div>
+
+  <div id="msg"></div>
+
+  <details style="margin-top:12px;color:#555">
+    <summary>Why this works</summary>
+    <ul>
+      <li>No image processing in the page → minimal memory usage.</li>
+      <li>Use your phone’s Camera app first, then choose the saved photo.</li>
+      <li>If you need the serial quickly, use the phone’s built-in Code Scanner (iOS Control Center / Android Lens) and paste here.</li>
+    </ul>
+  </details>
 </div>
-
-<div id="scanWrap">
-  <video id="video" playsinline muted></video>
-  <div id="scanMsg">Point camera at the barcode…</div>
-</div>
-
-<br>
-<label>Photo</label><br>
-<input id="photo" type="file" accept="image/*" capture="environment"><br><br>
-
-<button id="saveBtn">Save as &lt;serial&gt;.jpg</button>
-<div id="msg"></div>
 
 <script>
 const serialEl = document.getElementById('serial');
-const scanBtn  = document.getElementById('scanBtn');
-const stopBtn  = document.getElementById('stopBtn');
-const scanWrap = document.getElementById('scanWrap');
-const video    = document.getElementById('video');
-const photoInp = document.getElementById('photo');
+const fileEl   = document.getElementById('file');
+const saveBtn  = document.getElementById('save');
+const resetBtn = document.getElementById('reset');
 const msgEl    = document.getElementById('msg');
 
-let stream=null, detector=null, running=false, tick=null, canvas=null, ctx=null;
+function safeSerial(s){ return (s||'').replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,''); }
+function show(ok, t){ msgEl.style.color = ok ? '#0a0' : '#d00'; msgEl.textContent = t || ''; }
 
-function show(ok, t){ msgEl.style.color = ok ? '#0a0' : '#d00'; msgEl.textContent = t; }
-function supportsBD(){ return 'BarcodeDetector' in window; }
+saveBtn.addEventListener('click', ()=>{
+  const raw = (serialEl.value || '').trim();
+  const f = fileEl.files && fileEl.files[0];
+  if (!raw){ alert('Enter the serial first.'); serialEl.focus(); return; }
+  if (!f){ alert('Choose a saved photo from your library.'); fileEl.focus(); return; }
 
-function startScan(){
-  if (!supportsBD()){ show(false,'Barcode scan not supported; type the serial.'); return; }
-  try{
-    detector = new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf','codabar']});
-  }catch(e){ show(false,'BarcodeDetector init failed: '+e); return; }
+  const safe = safeSerial(raw) || 'photo';
+  // try to keep original extension
+  let ext = 'jpg';
+  const m = (f.name||'').match(/\.([A-Za-z0-9]+)$/);
+  if (m) ext = m[1];
+  else if (f.type) { const g = f.type.split('/')[1] || 'jpg'; ext = g.replace(/[^A-Za-z0-9]/g,'') || 'jpg'; }
+  const outName = `${safe}.${ext.toLowerCase()}`;
 
-  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false})
-  .then(s=>{
-    stream=s; video.srcObject=s; return video.play();
-  })
-  .then(()=>{
-    if (video.readyState<2) return new Promise(res=>video.onloadedmetadata=res);
-  })
-  .then(()=>{
-    canvas=document.createElement('canvas');
-    canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
-    ctx=canvas.getContext('2d',{willReadFrequently:true});
-    scanWrap.style.display='block'; scanBtn.style.display='none'; stopBtn.style.display='inline-block';
-    running=true; scanLoop();
-  })
-  .catch(e=>show(false,'Camera error: '+e));
-}
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(f);
+  a.href = url;
+  a.download = outName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  try { URL.revokeObjectURL(url); } catch(_){}
 
-function scanLoop(){
-  if(!running) return;
-  try{ ctx.drawImage(video,0,0,canvas.width,canvas.height); }catch(e){}
-  detector.detect(canvas).then(results=>{
-    if(results && results.length){
-      const txt=(results[0].rawValue||results[0].displayValue||'').trim();
-      if(txt){ serialEl.value=txt; stopScan(true); }
-    }
-  }).catch(()=>{});
-  tick=setTimeout(scanLoop,100);
-}
-
-function stopScan(hide){
-  running=false; if(tick){clearTimeout(tick); tick=null;}
-  if(stream){ try{stream.getTracks().forEach(t=>t.stop());}catch(e){} stream=null; }
-  if(hide) scanWrap.style.display='none';
-  scanBtn.style.display='inline-block'; stopBtn.style.display='none';
-}
-
-async function saveAsSerialJpg(){
-  const serial=(serialEl.value||'').trim();
-  if(!serial) return alert('Enter the serial first.');
-  const f=photoInp.files[0];
-  if(!f) return alert('Take/choose a photo.');
-  // read image, convert to JPEG blob
-  const dataUrl = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); });
-  const img = new Image(); img.decoding='async';
-  await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=dataUrl; });
-  const cnv=document.createElement('canvas');
-  cnv.width=img.naturalWidth; cnv.height=img.naturalHeight;
-  cnv.getContext('2d').drawImage(img,0,0);
-  const jpegDataUrl = cnv.toDataURL('image/jpeg', 0.92);
-  // trigger download as <serial>.jpg
-  const a=document.createElement('a');
-  a.href=jpegDataUrl;
-  const safeSerial=serial.replace(/\s+/g,'').replace(/[^A-Za-z0-9_-]/g,'')||'photo';
-  a.download=safeSerial+'.jpg';
-  document.body.appendChild(a); a.click(); a.remove();
-  show(true,'Saved locally as '+safeSerial+'.jpg (check Downloads).');
-  // optional: reset photo picker
-  photoInp.value='';
+  show(true, `Saved local copy as ${outName}. Upload to your Drive audit folder.`);
+  fileEl.value = '';
+  serialEl.value = '';
   serialEl.focus();
-}
+});
 
-scanBtn.addEventListener('click', ()=>startScan());
-stopBtn.addEventListener('click', ()=>stopScan(true));
-document.getElementById('saveBtn').addEventListener('click', ()=>saveAsSerialJpg());
+resetBtn.addEventListener('click', ()=>{
+  fileEl.value = '';
+  serialEl.value = '';
+  show(true,'');
+  setTimeout(()=>serialEl.focus(),200);
+});
 setTimeout(()=>serialEl.focus(),400);
 </script>
+</body>
 </html>

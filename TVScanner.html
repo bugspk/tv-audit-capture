@@ -22,7 +22,6 @@
   summary { cursor:pointer; color:#333; font-weight:600; }
   summary::marker { color:#888; }
   ol { color:#555; line-height:1.45; padding-left:20px; margin:8px 0 0; }
-
   .fileinfo { margin-top:8px; font-size:13px; color:#333; display:none; }
   .fileinfo .name { font-weight:600; }
   .preview { margin-top:6px; }
@@ -33,15 +32,15 @@
 </head>
 <body>
 <div class="wrap">
-  <h2>Serial Scanner v0.93</h2>
+  <h2>Serial Scanner v0.95</h2>
 
   <details>
     <summary>How to use (tap to expand)</summary>
     <ol>
-      <li>Tap <b>Scan from Photo</b> → native camera opens → capture the barcode image (autofocus works in native camera).</li>
-      <li>The image is decoded locally and fills the <b>Serial</b> field.</li>
-      <li>Take the <b>Audit Photo</b> (the actual TV picture), verify filename/thumbnail, then tap <b>Save as JPG</b> to download <code>&lt;serial&gt;.jpg</code>.</li>
-      <li>Upload saved JPGs to your Google Drive <code>YYYY_MM</code> folder later, then run your Sheet’s Insert/Update.</li>
+      <li>Tap <b>Scan from Photo</b> → native camera opens → capture the barcode image (native autofocus).</li>
+      <li>We <b>downscale</b> the captured photo and decode locally to fill <b>Serial</b>.</li>
+      <li>Take the separate <b>Audit Photo</b> (the TV picture), verify preview, then <b>Save as JPG</b> (named <code>&lt;serial&gt;.jpg</code>).</li>
+      <li>Upload JPGs to Google Drive <code>YYYY_MM</code> later; run your Sheet’s Insert/Update.</li>
     </ol>
   </details>
 
@@ -52,7 +51,6 @@
     <!-- hidden file input used for barcode scan (opens native camera) -->
     <input id="scanPhoto" type="file" accept="image/*" capture="environment" style="display:none">
   </div>
-  <!-- hidden target element required by html5-qrcode; we don't display it -->
   <div id="reader" style="display:none;"></div>
 
   <label>Audit Photo</label>
@@ -86,8 +84,10 @@ const fileSizeEl = fileInfoEl.querySelector('.size');
 const previewImg = document.getElementById('previewImg');
 
 let busy=false, currentPreviewUrl=null;
-/* Android quirk: sometimes camera returns without firing change */
 let waitingCaptureScan=false, waitingCapturePhoto=false;
+
+// Reuse a single Html5Qrcode instance to avoid reloading WASM/code repeatedly
+const scanner = new Html5Qrcode("reader");
 
 /* ===== Helpers ===== */
 function show(ok,t){ msgEl.style.color=ok?'#0a0':'#d00'; msgEl.textContent=t||''; }
@@ -99,6 +99,76 @@ function humanSize(bytes){
   return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + units[i];
 }
 
+/* Downscale a captured image to a smaller JPEG Blob (memory friendly) */
+async function compressToJpegBlob(file, maxLongSide=1280, quality=0.85){
+  // Prefer createImageBitmap with resize props if supported
+  try {
+    // Some browsers support resize options directly:
+    // const bmp = await createImageBitmap(file, { resizeWidth: maxLongSide, resizeHeight: maxLongSide, resizeQuality: 'high' });
+    // But we'll do manual scaling for widest compatibility.
+    const bmp = await createImageBitmap(file);
+    let w = bmp.naturalWidth || bmp.width || 1280;
+    let h = bmp.naturalHeight || bmp.height || 720;
+    if (w >= h && w > maxLongSide) { h = Math.round(h * (maxLongSide / w)); w = maxLongSide; }
+    else if (h > w && h > maxLongSide) { w = Math.round(w * (maxLongSide / h)); h = maxLongSide; }
+
+    // OffscreenCanvas if available (saves some memory), fallback to regular canvas
+    let cnv, ctx;
+    if (typeof OffscreenCanvas === 'function'){
+      cnv = new OffscreenCanvas(w, h);
+      ctx = cnv.getContext('2d', { willReadFrequently: true });
+    } else {
+      cnv = document.createElement('canvas');
+      cnv.width = w; cnv.height = h;
+      ctx = cnv.getContext('2d', { willReadFrequently: true });
+    }
+    ctx.drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) try { bmp.close(); } catch(_) {}
+
+    const blob = await new Promise((res, rej) => {
+      // OffscreenCanvas uses convertToBlob; HTMLCanvas uses toBlob
+      if (cnv.convertToBlob) {
+        cnv.convertToBlob({ type: 'image/jpeg', quality }).then(res).catch(rej);
+      } else {
+        cnv.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', quality);
+      }
+    });
+
+    // Free canvas memory
+    try { cnv.width = 0; cnv.height = 0; } catch(_) {}
+    return blob;
+
+  } catch (e) {
+    // Fallback: decode via <img>
+    const objURL = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = objURL;
+      });
+      let w = img.naturalWidth || 1280;
+      let h = img.naturalHeight || 720;
+      if (w >= h && w > maxLongSide) { h = Math.round(h * (maxLongSide / w)); w = maxLongSide; }
+      else if (h > w && h > maxLongSide) { w = Math.round(w * (maxLongSide / h)); h = maxLongSide; }
+
+      const cnv = document.createElement('canvas');
+      cnv.width = w; cnv.height = h;
+      const ctx = cnv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const blob = await new Promise((res, rej) =>
+        cnv.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', quality)
+      );
+      try { cnv.width = cnv.height = 0; } catch(_) {}
+      return blob;
+    } finally {
+      try { URL.revokeObjectURL(objURL); } catch(_) {}
+    }
+  }
+}
+
 /* ===== Scan from Photo (native camera capture) ===== */
 scanFromPhotoBtn.addEventListener('click', () => {
   waitingCaptureScan = true;
@@ -108,12 +178,15 @@ scanFromPhotoBtn.addEventListener('click', () => {
 async function handleScanPhotoFile(file){
   if (!file) return;
   try {
-    // Use html5-qrcode to decode a file (no live camera)
-    const scanner = new Html5Qrcode("reader");
-    const result = await scanner.scanFileV2(file, false); // false: don't try to show image in a UI
-    await scanner.clear();
+    // 1) Downscale the captured file BEFORE decoding (prevents low-memory)
+    const smallBlob = await compressToJpegBlob(file, 1280, 0.85);
+    // html5-qrcode expects a File or Blob; use a File with a tiny name
+    const tinyFile = new File([smallBlob], 'scan.jpg', { type: 'image/jpeg' });
 
+    // 2) Decode from the smaller file
+    const result = await scanner.scanFileV2(tinyFile, false);
     const code = (result && result.decodedText || '').trim();
+
     if (code){
       serialEl.value = code;
       show(true, 'Scanned from photo: ' + code);
@@ -123,7 +196,7 @@ async function handleScanPhotoFile(file){
   } catch (e) {
     show(false, 'Scan from photo failed: ' + (e && e.message ? e.message : e));
   } finally {
-    // Reset the scan input for the next use
+    // 3) Reset the scan input to free memory + allow re-pick; rewire listener
     const newInp = scanPhotoInput.cloneNode();
     scanPhotoInput.parentNode.replaceChild(newInp, scanPhotoInput);
     scanPhotoInput = newInp;
@@ -138,9 +211,7 @@ function onScanPhotoChange(){
   if (f) handleScanPhotoFile(f);
 }
 function onVisibilityChange(){
-  // Called on page resume from native camera
   if (!document.hidden) {
-    // Handle scan input polling
     if (waitingCaptureScan){
       waitingCaptureScan = false;
       let tries = 0;
@@ -151,7 +222,6 @@ function onVisibilityChange(){
         setTimeout(poll, 100);
       })();
     }
-    // Handle audit photo input polling
     if (waitingCapturePhoto){
       waitingCapturePhoto = false;
       let tries = 0;
@@ -165,7 +235,6 @@ function onVisibilityChange(){
   }
 }
 document.addEventListener('visibilitychange', onVisibilityChange);
-
 function wireScanPhotoHandlers(){
   scanPhotoInput.addEventListener('change', onScanPhotoChange);
 }
@@ -207,9 +276,8 @@ async function saveAsJpgSerial(){
 
   let bitmap=null, dlUrl=null;
   try {
-    // Efficient decode
     try {
-      bitmap = await createImageBitmap(f /*, { imageOrientation:'from-image' } */);
+      bitmap = await createImageBitmap(f);
     } catch {
       const objURL = URL.createObjectURL(f);
       bitmap = await new Promise((resolve,reject)=>{
@@ -217,7 +285,7 @@ async function saveAsJpgSerial(){
       }).finally(()=>{ try{ URL.revokeObjectURL(objURL); }catch(_){ } });
     }
 
-    // Downscale (long side ≤ 1600) to avoid memory issues
+    // Downscale audit photo too (long side ≤ 1600)
     const MAX = 1600;
     let w = bitmap.naturalWidth  || bitmap.width  || 1280;
     let h = bitmap.naturalHeight || bitmap.height || 720;
@@ -226,7 +294,7 @@ async function saveAsJpgSerial(){
 
     const cnv = document.createElement('canvas');
     cnv.width = w; cnv.height = h;
-    const cctx = cnv.getContext('2d', { willReadFrequently:true });
+    const cctx = cnv.getContext('2d', { willReadFrequently: true });
     cctx.drawImage(bitmap, 0, 0, w, h);
     try { if (bitmap.close) bitmap.close(); } catch(_) {}
     bitmap = null;
@@ -247,14 +315,12 @@ async function saveAsJpgSerial(){
   } catch (e) {
     show(false, 'Save failed: ' + (e && e.message ? e.message : e));
   } finally {
-    // Clear audit preview + name/size
     if (currentPreviewUrl){ try { URL.revokeObjectURL(currentPreviewUrl); } catch(_){ } currentPreviewUrl = null; }
     previewImg.removeAttribute('src');
     fileInfoEl.style.display = 'none';
     fileNameEl.textContent = '';
     fileSizeEl.textContent = '';
 
-    // Fully reset the audit photo input and rewire listeners
     const newInp = photoInp.cloneNode();
     photoInp.parentNode.replaceChild(newInp, photoInp);
     photoInp = newInp;
@@ -262,7 +328,6 @@ async function saveAsJpgSerial(){
     photoInp.addEventListener('change', onAuditPhotoChange);
     photoInp.addEventListener('input', onAuditPhotoChange);
 
-    // Keep serial so you can re-save if needed? (Clear for next TV:)
     serialEl.value = '';
     setTimeout(() => serialEl.focus(), 200);
 
@@ -296,9 +361,14 @@ saveBtn.addEventListener('click', saveAsJpgSerial);
 resetBtn.addEventListener('click', resetAll);
 
 // audit photo handlers (Android quirks)
-photoInp.addEventListener('click', onAuditPhotoClick);
+photoInp.addEventListener('click', () => { waitingCapturePhoto = true; });
 photoInp.addEventListener('change', onAuditPhotoChange);
 photoInp.addEventListener('input', onAuditPhotoChange);
+
+// scan photo handlers (Android quirks)
+function onScanPhotoClick(){ waitingCaptureScan = true; }
+scanPhotoInput.addEventListener('change', onScanPhotoChange);
+scanFromPhotoBtn.addEventListener('click', () => { onScanPhotoClick(); scanPhotoInput.click(); });
 
 // initial focus
 setTimeout(() => serialEl.focus(), 300);
